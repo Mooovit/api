@@ -1,3 +1,17 @@
+### About the project
+
+You need to install `composer` to install the dependencies of the project.
+
+Follow these steps to launch the project:
+- `composer install`
+- create db: `touch db.sqlite && php artisan migrate`
+- Starting the app `php artisan serve` and open the [app](https://api.test/)
+- Once you opened the app, you will click at the top right of the interface to register you a new account.
+
+
+To check the status of the migration run `php artisan migrate:status`
+
+
 <p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400"></a></p>
 
 <p align="center">
