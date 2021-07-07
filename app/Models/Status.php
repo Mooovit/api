@@ -8,6 +8,8 @@ use Illuminate\Database\Eloquent\Model;
 
 class Status extends Model
 {
+    public $fillable = ['name', 'team_id'];
+
     use HasFactory;
     use Uuids;
 }

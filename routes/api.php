@@ -1,10 +1,8 @@
 <?php
 
-use App\Http\Controllers\BoxController;
 use App\Http\Controllers\ItemController;
 use App\Http\Controllers\LocationController;
 use App\Http\Controllers\StatusController;
-use App\Models\Team;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -34,7 +32,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/teams', function (Request $request) {
         return $request->user()->allTeams();
     });
-    Route::resource('box', BoxController::class);
     Route::resource('item', ItemController::class);
     Route::resource('status', StatusController::class);
     Route::resource('location', LocationController::class);

@@ -50,13 +50,13 @@ class LocationController extends Controller
 
         /* We check that the user can create a box in the team */
         if(
-            !$user->hasTeamPermission($team, 'location:manage') ||
-            !$user->tokenCan('location:manage')
+            !$user->hasTeamPermission($team, 'location:write') ||
+            !$user->tokenCan('location:write')
         ) {
             throw new AuthorizationException();
         }
 
-        return Location::forceCreate([
+        return Location::create([
             "name" => $data['name'],
             "team_id" => $team->id,
         ]);

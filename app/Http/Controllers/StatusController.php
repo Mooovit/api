@@ -50,13 +50,13 @@ class StatusController extends Controller
 
         /* We check that the user can create a box in the team */
         if(
-            !$user->hasTeamPermission($team, 'status:manage') ||
-            !$user->tokenCan('status:manage')
+            !$user->hasTeamPermission($team, 'status:write') ||
+            !$user->tokenCan('status:write')
         ) {
             throw new AuthorizationException();
         }
 
-        return Status::forceCreate([
+        return Status::create([
             "name" => $data['name'],
             "team_id" => $team->id,
         ]);
