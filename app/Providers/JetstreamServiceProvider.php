@@ -52,18 +52,15 @@ class JetstreamServiceProvider extends ServiceProvider
         Jetstream::defaultApiTokenPermissions(['box:write', 'box:read', 'item:read', 'item:write']);
 
         Jetstream::role('admin', __('Administrator'), [
-            'box:write',
             'location:write',
             'status:write',
             'item:write',
-            'box:read',
             'location:read',
             'status:read',
             'item:read',
         ])->description(__('Administrator can do all actions'));
 
         Jetstream::role('Read Only', __('Viewer'), [
-            'box:read',
             'location:read',
             'status:read',
             'item:read',
@@ -72,8 +69,6 @@ class JetstreamServiceProvider extends ServiceProvider
 
     protected function permissions() {
         Jetstream::permissions([
-            'box:write',
-            'box:read',
             'location:write',
             'location:read',
             'status:write',
