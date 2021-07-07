@@ -37,6 +37,7 @@ class ItemController extends Controller
      */
     public function store(Request $request)
     {
+        // TODO: box_id is now deprecated, we need to change it
         $data = $request->validate([
             "name" => "required|string",
             "box_id" => "required|string",
