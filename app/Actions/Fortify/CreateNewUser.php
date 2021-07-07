@@ -4,6 +4,7 @@ namespace App\Actions\Fortify;
 
 use App\Models\Team;
 use App\Models\User;
+use App\Models\Status;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
@@ -35,7 +36,8 @@ class CreateNewUser implements CreatesNewUsers
                 'email' => $input['email'],
                 'password' => Hash::make($input['password']),
             ]), function (User $user) {
-                $this->createTeam($user);
+                $team = $this->createTeam($user);
+                $this->createDefaultStatus($team);
             });
         });
     }
@@ -48,10 +50,23 @@ class CreateNewUser implements CreatesNewUsers
      */
     protected function createTeam(User $user)
     {
-        $user->ownedTeams()->save(Team::forceCreate([
+        return $user->ownedTeams()->save(Team::forceCreate([
             'user_id' => $user->id,
             'name' => explode(' ', $user->name, 2)[0]."'s Team",
             'personal_team' => true,
         ]));
+    }
+
+    protected function createDefaultStatus(Team $team)
+    {
+      new Status([
+        'name' => 'Departure',
+        'team_id' => $team->id
+      ])
+
+      new Status([
+        'name' => 'Arrival',
+        'team_id' => $team->id
+      ])
     }
 }
