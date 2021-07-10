@@ -3,6 +3,7 @@
 use App\Http\Controllers\ItemController;
 use App\Http\Controllers\LocationController;
 use App\Http\Controllers\StatusController;
+use App\Http\Controllers\UserController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -17,6 +18,9 @@ use Illuminate\Support\Facades\Route;
 |
 */
 
+
+Route::post('/register', [UserController::class, 'register']);
+Route::post('/authenticate', [UserController::class, 'authenticate']);
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/user', function (Request $request) {
         $permissions = collect();
@@ -32,6 +36,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/teams', function (Request $request) {
         return $request->user()->allTeams();
     });
+
     Route::resource('item', ItemController::class);
     Route::resource('status', StatusController::class);
     Route::resource('location', LocationController::class);
