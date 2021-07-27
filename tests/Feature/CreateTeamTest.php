@@ -13,12 +13,13 @@ class CreateTeamTest extends TestCase
     public function test_teams_can_be_created()
     {
         $this->actingAs($user = User::factory()->withPersonalTeam()->create());
+        $this->assertCount(1, $user->fresh()->ownedTeams);
+        $this->assertFalse($user->fresh()->ownedTeams()->where("name", "Test Team")->exists());
 
         $response = $this->post('/teams', [
             'name' => 'Test Team',
         ]);
-
         $this->assertCount(2, $user->fresh()->ownedTeams);
-        $this->assertEquals('Test Team', $user->fresh()->ownedTeams()->latest('id')->first()->name);
+        $this->assertTrue($user->fresh()->ownedTeams()->where("name", "Test Team")->exists());
     }
 }
