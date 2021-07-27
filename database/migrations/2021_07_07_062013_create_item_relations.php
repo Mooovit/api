@@ -16,7 +16,7 @@ class CreateItemRelations extends Migration
         /* We update the items table */
         Schema::table('items', function (Blueprint $table) {
             $table->uuid('parent_id')->nullable()->default(null);
-            $table->uuid('team_id')->index();
+            $table->uuid('team_id')->index()->nullable();
             $table->uuid('location_id')->index()->nullable();
             $table->uuid('status_id')->index()->nullable();
             $table->foreign('team_id')->references('id')->on('teams');
