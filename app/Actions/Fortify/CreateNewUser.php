@@ -36,8 +36,11 @@ class CreateNewUser implements CreatesNewUsers
                 'email' => $input['email'],
                 'password' => Hash::make($input['password']),
             ]), function (User $user) {
-                $team = $this->createTeam($user);
-                $this->createDefaultStatus($team);
+                $this->createTeam($user)->statuses()->createMany([
+                    ['name' => 'Departure', 'position' => 0],
+                    ['name' => 'Pending', 'position' => 1],
+                    ['name' => 'Arrival', 'position' => 2]
+                ]);
             });
         });
     }
@@ -55,18 +58,5 @@ class CreateNewUser implements CreatesNewUsers
             'name' => explode(' ', $user->name, 2)[0]."'s Team",
             'personal_team' => true,
         ]));
-    }
-
-    protected function createDefaultStatus(Team $team)
-    {
-      new Status([
-        'name' => 'Departure',
-        'team_id' => $team->id
-      ])
-
-      new Status([
-        'name' => 'Arrival',
-        'team_id' => $team->id
-      ])
     }
 }

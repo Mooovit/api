@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class Status extends Model
 {
-    public $fillable = ['name', 'team_id'];
+    public $fillable = ['name', 'team_id', 'position'];
 
     use HasFactory;
     use Uuids;
