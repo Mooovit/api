@@ -7,10 +7,10 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use App\Actions\Fortify\CreateNewUser;
 
-
 class UserController extends Controller
 {
-    public function register(Request $request) {
+    public function register(Request $request)
+    {
         $registerClass = new CreateNewUser();
         $registerClass->create($request->all());
     }
@@ -22,7 +22,7 @@ class UserController extends Controller
         if (Auth::attempt($credentials)) {
             $user = Auth::user();
 
-            if($user->two_factor_secret) {
+            if ($user->two_factor_secret) {
                 throw new AuthenticationException("User has a two factor enabled");
             }
 

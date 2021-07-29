@@ -49,8 +49,7 @@ class LocationController extends Controller
         $team = Team::findOrFail($request['team_id']);
 
         /* We check that the user can create a box in the team */
-        if(
-            !$user->hasTeamPermission($team, 'location:write') ||
+        if (!$user->hasTeamPermission($team, 'location:write') ||
             !$user->tokenCan('location:write')
         ) {
             throw new AuthorizationException();
