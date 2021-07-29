@@ -1,6 +1,7 @@
 <?php
 
 namespace App\Http\Controllers;
+
 use App\Models\Item;
 use App\Models\Team;
 use Illuminate\Auth\Access\AuthorizationException;
@@ -51,8 +52,7 @@ class ItemController extends Controller
         $team = Team::findOrFail($request['team_id']);
 
         /* We check that the user can create a box in the team */
-        if(
-            !$user->hasTeamPermission($team, 'item:write') ||
+        if (!$user->hasTeamPermission($team, 'item:write') ||
             !$user->tokenCan('item:write')
         ) {
             throw new AuthorizationException();
@@ -114,8 +114,7 @@ class ItemController extends Controller
         $box = $item->box;
 
         /* We check that the user can create a box in the team */
-        if(
-            !$user->hasTeamPermission($box->team, 'item:write') ||
+        if (!$user->hasTeamPermission($box->team, 'item:write') ||
             !$user->tokenCan('item:write')
         ) {
             throw new AuthorizationException();

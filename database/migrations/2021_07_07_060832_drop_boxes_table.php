@@ -15,6 +15,10 @@ class DropBoxesTable extends Migration
     {
         /* We update the items table */
         Schema::table('items', function (Blueprint $table) {
+            if (DB::getDriverName() !== 'sqlite') {
+                $table->dropForeign('items_box_id_foreign');
+                $table->dropIndex('items_box_id_index');
+            }
             $table->dropColumn('box_id');
         });
 
