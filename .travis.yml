@@ -4,7 +4,7 @@ os:
 language: php
 
 php:
-  - '8.0'
+  - '7.4'
 
 before_script:
   - composer self-update
@@ -23,4 +23,14 @@ script:
   - vendor/bin/phpunit --coverage-text
   - vendor/bin/phpcs --ignore=app/Http/Controllers/Auth,app/Http/Controllers/Controller.php app/Http/Controllers
   - npm run production
-  - echo $DEPLOY base64 --decode | bash
+
+
+before_deploy:
+  - if ! [ -x "$(command -v aws)" ]; then curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" ; unzip awscliv2.zip ; sudo ./aws/install ; fi
+
+deploy:
+  skip_cleanup: true
+  provider: script
+  script: travis/deploy.sh
+  on:
+    branch: master
