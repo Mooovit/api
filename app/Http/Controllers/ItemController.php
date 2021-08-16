@@ -7,17 +7,19 @@ use App\Models\Team;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
+use Illuminate\Validation\UnauthorizedException;
 
 class ItemController extends Controller
 {
     /**
      * Display a listing of the resource.
      *
+     * @param Request $request
      * @return \Illuminate\Http\Response
      */
-    public function index()
+    public function index(Request $request): \Illuminate\Http\Response
     {
-        //
+        return Item::where('team_id', $request->user()->current_team_id)->get();
     }
 
     /**
@@ -36,7 +38,7 @@ class ItemController extends Controller
      * @param  \Illuminate\Http\Request  $request
      * @return \Illuminate\Http\Response
      */
-    public function store(Request $request)
+    public function store(Request $request): \Illuminate\Http\Response
     {
         $data = $request->validate([
             "name" => "required|string",
@@ -70,12 +72,21 @@ class ItemController extends Controller
     /**
      * Display the specified resource.
      *
-     * @param  \App\Models\Item  $item
-     * @return \Illuminate\Http\Response
+     * @param Request $request
+     * @param \App\Models\Item $item
+     * @return Item
      */
-    public function show(Item $item)
+    public function show(Request $request, Item $item): Item
     {
-        //
+        $team_id = $request->user()->current_team_id;
+        if ($item->team_id !== $team_id) {
+            throw new UnauthorizedException();
+        }
+        /* We can fetch childrens directly if we pass childrens boolean into request */
+        if (isset($request->childrens)) {
+            $item->childrens;
+        }
+        return $item;
     }
 
     /**
@@ -104,10 +115,12 @@ class ItemController extends Controller
     /**
      * Remove the specified resource from storage.
      *
-     * @param  \App\Models\Item  $item
+     * @param Request $request
+     * @param \App\Models\Item $item
      * @return \Illuminate\Http\Response
+     * @throws AuthorizationException
      */
-    public function destroy(Request $request, Item $item)
+    public function destroy(Request $request, Item $item): \Illuminate\Http\Response
     {
         $user = $request->user();
 
