@@ -13,9 +13,9 @@ class LocationController extends Controller
     /**
      * Display a listing of the resource.
      *
-     * @return \Illuminate\Http\Response
+     * @return \Illuminate\Support\Collection
      */
-    public function index(Request $request): \Illuminate\Http\Response
+    public function index(Request $request): \Illuminate\Support\Collection
     {
         return Location::where('team_id', $request->user()->current_team_id)->get();
     }

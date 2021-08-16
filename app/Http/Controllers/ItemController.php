@@ -15,9 +15,9 @@ class ItemController extends Controller
      * Display a listing of the resource.
      *
      * @param Request $request
-     * @return \Illuminate\Http\Response
+     * @return \Illuminate\Support\Collection
      */
-    public function index(Request $request): \Illuminate\Http\Response
+    public function index(Request $request): \Illuminate\Support\Collection
     {
         return Item::where('team_id', $request->user()->current_team_id)->get();
     }
