@@ -6,6 +6,7 @@ use App\Models\Location;
 use App\Models\Team;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\Request;
+use Illuminate\Validation\UnauthorizedException;
 
 class LocationController extends Controller
 {
@@ -14,9 +15,9 @@ class LocationController extends Controller
      *
      * @return \Illuminate\Http\Response
      */
-    public function index()
+    public function index(Request $request): \Illuminate\Http\Response
     {
-        //
+        return Location::where('team_id', $request->user()->current_team_id)->get();
     }
 
     /**
@@ -35,7 +36,7 @@ class LocationController extends Controller
      * @param  \Illuminate\Http\Request  $request
      * @return \Illuminate\Http\Response
      */
-    public function store(Request $request)
+    public function store(Request $request): \Illuminate\Http\Response
     {
         $data = $request->validate([
             "name" => "required|string",
@@ -64,12 +65,17 @@ class LocationController extends Controller
     /**
      * Display the specified resource.
      *
-     * @param  \App\Models\Location  $location
-     * @return \Illuminate\Http\Response
+     * @param Request $request
+     * @param \App\Models\Location $location
+     * @return Location
      */
-    public function show(Location $location)
+    public function show(Request $request, Location $location): Location
     {
-        //
+        $team_id = $request->user()->current_team_id;
+        if ($location->team_id !== $team_id) {
+            throw new UnauthorizedException();
+        }
+        return $location;
     }
 
     /**

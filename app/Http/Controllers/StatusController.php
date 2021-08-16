@@ -6,17 +6,19 @@ use App\Models\Status;
 use App\Models\Team;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\Request;
+use Illuminate\Validation\UnauthorizedException;
 
 class StatusController extends Controller
 {
     /**
      * Display a listing of the resource.
      *
+     * @param Request $request
      * @return \Illuminate\Http\Response
      */
-    public function index()
+    public function index(Request $request): \Illuminate\Http\Response
     {
-        //
+        return Status::where('team_id', $request->user()->current_team_id)->get();
     }
 
     /**
@@ -35,7 +37,7 @@ class StatusController extends Controller
      * @param  \Illuminate\Http\Request  $request
      * @return \Illuminate\Http\Response
      */
-    public function store(Request $request)
+    public function store(Request $request): \Illuminate\Http\Response
     {
         $data = $request->validate([
             "name" => "required|string",
@@ -64,12 +66,17 @@ class StatusController extends Controller
     /**
      * Display the specified resource.
      *
-     * @param  \App\Models\Status  $status
-     * @return \Illuminate\Http\Response
+     * @param Request $request
+     * @param \App\Models\Status $status
+     * @return Status
      */
-    public function show(Status $status)
+    public function show(Request $request, Status $status): Status
     {
-        //
+        $team_id = $request->user()->current_team_id;
+        if ($status->team_id !== $team_id) {
+            throw new UnauthorizedException();
+        }
+        return $status;
     }
 
     /**
