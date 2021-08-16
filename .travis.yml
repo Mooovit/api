@@ -27,6 +27,7 @@ script:
 
 before_deploy:
   - if ! [ -x "$(command -v aws)" ]; then curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" ; unzip awscliv2.zip ; sudo ./aws/install ; fi
+  - git clean -fxd -e 'vendor'
 
 deploy:
   skip_cleanup: true
