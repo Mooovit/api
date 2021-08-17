@@ -5,8 +5,9 @@ namespace App\Http\Controllers;
 use App\Models\Status;
 use App\Models\Team;
 use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Validation\UnauthorizedException;
+use Illuminate\Support\Collection;
 
 class StatusController extends Controller
 {
@@ -14,34 +15,36 @@ class StatusController extends Controller
      * Display a listing of the resource.
      *
      * @param Request $request
-     * @return \Illuminate\Support\Collection
+     * @return Collection
+     * @throws AuthorizationException
      */
-    public function index(Request $request): \Illuminate\Support\Collection
+    public function index(Request $request): Collection
     {
-        return Status::where('team_id', $request->user()->current_team_id)->get();
-    }
+        $user = $request->user();
 
-    /**
-     * Show the form for creating a new resource.
-     *
-     * @return \Illuminate\Http\Response
-     */
-    public function create()
-    {
-        //
+        /* We check that the user can create a box in the team */
+        if (!$user->hasTeamPermission($user->current_team, 'status:read') ||
+            !$user->tokenCan('status:read')
+        ) {
+            throw new AuthorizationException();
+        }
+
+        return Status::where('team_id', $user->current_team_id)->get();
     }
 
     /**
      * Store a newly created resource in storage.
      *
-     * @param  \Illuminate\Http\Request  $request
-     * @return \Illuminate\Http\Response
+     * @param Request $request
+     * @return Status
+     * @throws AuthorizationException
      */
-    public function store(Request $request): \Illuminate\Http\Response
+    public function store(Request $request): Status
     {
         $data = $request->validate([
             "name" => "required|string",
             "team_id" => "required|string",
+            "position" => "integer|nullable",
         ]);
 
         /* We get the user from the request */
@@ -67,49 +70,69 @@ class StatusController extends Controller
      * Display the specified resource.
      *
      * @param Request $request
-     * @param \App\Models\Status $status
+     * @param Status $status
      * @return Status
      */
     public function show(Request $request, Status $status): Status
     {
-        $team_id = $request->user()->current_team_id;
-        if ($status->team_id !== $team_id) {
-            throw new UnauthorizedException();
-        }
-        return $status;
-    }
+        $user = $request->user();
 
-    /**
-     * Show the form for editing the specified resource.
-     *
-     * @param  \App\Models\Status  $status
-     * @return \Illuminate\Http\Response
-     */
-    public function edit(Status $status)
-    {
-        //
+        /* We check that the user can get a location in that team */
+        if (!$user->hasTeamPermission($status->team, 'location:read') ||
+            !$user->tokenCan('location:read')
+        ) {
+            throw new AuthorizationException();
+        }
+
+        return $status;
     }
 
     /**
      * Update the specified resource in storage.
      *
-     * @param  \Illuminate\Http\Request  $request
-     * @param  \App\Models\Status  $status
-     * @return \Illuminate\Http\Response
+     * @param Request $request
+     * @param Status $status
+     * @return Status
+     * @throws AuthorizationException
      */
-    public function update(Request $request, Status $status)
+    public function update(Request $request, Status $status): Status
     {
-        //
+        $user = $request->user();
+
+        /* We check that the user can update a status in the team */
+        if (!$user->hasTeamPermission($status->team, 'location:write') ||
+            !$user->tokenCan('location:write')
+        ) {
+            throw new AuthorizationException();
+        }
+
+        $data = $request->validate([
+            "name" => "required|string",
+            "position" => "integer|nullable",
+        ]);
+
+        $status->update($data);
+        return $status->refresh();
     }
 
     /**
      * Remove the specified resource from storage.
      *
-     * @param  \App\Models\Status  $status
-     * @return \Illuminate\Http\Response
+     * @param Request $request
+     * @param Status $status
+     * @return JsonResponse
+     * @throws AuthorizationException
      */
-    public function destroy(Status $status)
+    public function destroy(Request $request, Status $status): JsonResponse
     {
-        //
+        $user = $request->user();
+
+        if (!$user->hasTeamPermission($status->team, 'location:write') ||
+            !$user->tokenCan('location:write')
+        ) {
+            throw new AuthorizationException();
+        }
+        $status->delete();
+        return response()->json(['success' => 'success']);
     }
 }

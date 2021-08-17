@@ -59,4 +59,8 @@ class User extends Authenticatable
     protected $appends = [
         'profile_photo_url',
     ];
+
+    protected function current_team() {
+        return $this->belongsTo(Team::class);
+    }
 }
