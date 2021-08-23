@@ -24,9 +24,9 @@ class ItemController extends Controller
     private function checkParents(String $team_id, Array $data)
     {
         foreach ([
-                Location::class => $data['location_id'],
-                Status::class => $data['status_id'],
-                Item::class => $data['parent_id']
+                Location::class => isset($data['location_id']) ? $data['location_id'] : null,
+                Status::class => isset($data['status_id']) ? $data['status_id'] : null,
+                Item::class => isset($data['parent_id']) ? $data['parent_id'] : null,
             ] as $model => $value
         ) {
             if (!$value) {
