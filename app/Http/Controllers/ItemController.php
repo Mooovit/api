@@ -144,9 +144,9 @@ class ItemController extends Controller
         }
 
         $data = $request->validate([
-            "name" => "required|string",
-            "location_id" => "required|string|exists:locations,id",
-            "status_id" => "required|string|exists:statuses,id",
+            "name" => "string",
+            "location_id" => "string|exists:locations,id",
+            "status_id" => "string|exists:statuses,id",
             "parent_id" => "nullable|string|exists:items,id",
         ]);
 
