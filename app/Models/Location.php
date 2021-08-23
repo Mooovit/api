@@ -10,11 +10,6 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class Location extends Model
 {
     public $fillable = ['name', 'team_id'];
-    /**
-     * @var mixed
-     */
-    public $team;
-
     use HasFactory;
     use Uuids;
 
