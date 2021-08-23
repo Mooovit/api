@@ -14,14 +14,6 @@ class Item extends Model
     use Uuids;
 
     public $fillable = ['name', 'team_id', 'location_id', 'status_id', 'parent_id'];
-    /**
-     * @var mixed
-     */
-    public $team;
-    /**
-     * @var mixed
-     */
-    public $team_id;
 
     /**
      * Children Relations
@@ -41,10 +33,7 @@ class Item extends Model
         return $this->belongsTo(Item::class);
     }
 
-    /**
-     * Team Relation
-     * @return BelongsTo
-     */
+
     public function team(): BelongsTo
     {
         return $this->belongsTo(Team::class);
