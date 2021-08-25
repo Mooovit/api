@@ -135,10 +135,9 @@ class ItemController extends Controller
     public function update(Request $request, Item $item): Item
     {
         $user = $request->user();
-
         /* We check that the user can update an item in the team */
         if (!$user->hasTeamPermission($item->team, 'item:write') ||
-            !$user->tokenCan('item:write')
+            (!$user->tokenCan('item:write') && $request->is('api/*'))
         ) {
             throw new AuthorizationException();
         }

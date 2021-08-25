@@ -1,4 +1,5 @@
 require('./bootstrap');
+require('jkanban');
 
 // Import modules...
 import { createApp, h } from 'vue';
