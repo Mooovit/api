@@ -53,7 +53,7 @@
             dropEl           : function (el, target, source, sibling) {
                 console.log("ItemId", el.dataset.eid);
                 console.log("NewStatus", target.parentElement.dataset.id);
-                window.axios.patch(`/item/${el.dataset.eid}`, {
+                window.axios.post(`/item/${el.dataset.eid}`, {
                     "{{ $field }}": target.parentElement.dataset.id,
                 }, { withCredentials: true}).then(response => {
                     console.log(response);

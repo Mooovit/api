@@ -31,7 +31,7 @@ Route::get('/', function () {
     ]);
 });
 
-Route::patch('/item/{item}', [ItemController::class, 'update']);
+Route::post('/item/{item}', [ItemController::class, 'update']);
 
 Route::get('/kanban/{type}', function(Request $request, String $type) {
     $user = $request->user();
