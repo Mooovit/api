@@ -52,10 +52,12 @@ Route::get('/kanban/{type}', function(Request $request, String $type) {
     foreach($query['model']::where(["team_id" => $team_id])->with('items')->get() as $instance) {
         $boardItem = [];
         foreach($instance->items as $item) {
-            array_push($boardItem, [
-                "id" => $item->id,
-                "title" => $item->name
-            ]);
+            if(!$item->parent_id) {
+                array_push($boardItem, [
+                    "id" => $item->id,
+                    "title" => $item->name
+                ]);
+            }
         }
         array_push($jsonData, [
             "id" => $instance->id,
