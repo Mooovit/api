@@ -1,6 +1,8 @@
 <?php
 
+use App\Http\Controllers\HistoryController;
 use App\Http\Controllers\ItemController;
+use App\Http\Controllers\LabelController;
 use App\Http\Controllers\LocationController;
 use App\Http\Controllers\StatusController;
 use App\Http\Controllers\UserController;
@@ -38,6 +40,16 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::resource('item', ItemController::class);
+    Route::get('item/{item}/history', [HistoryController::class, 'index']);
     Route::resource('status', StatusController::class);
     Route::resource('location', LocationController::class);
+    
+    // Label management API routes
+    Route::get('labels', [LabelController::class, 'index']);
+    Route::post('labels', [LabelController::class, 'store']);
+    Route::patch('labels/{label}', [LabelController::class, 'update']);
+    Route::delete('labels/{label}', [LabelController::class, 'destroy']);
+    Route::post('item/{item}/labels', [LabelController::class, 'attachToItem']);
+    Route::delete('item/{item}/labels/{label}', [LabelController::class, 'detachFromItem']);
+
 });

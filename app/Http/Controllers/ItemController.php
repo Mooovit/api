@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\History;
 use App\Models\Item;
 use App\Models\Location;
 use App\Models\Status;
@@ -36,6 +37,37 @@ class ItemController extends Controller
                 'id' => $value,
                 'team_id' => $team_id,
             ])->firstOrFail();
+        }
+    }
+
+    /**
+     * Record changes to item fields in the history table
+     *
+     * @param Item $item
+     * @param array $data
+     * @param $user
+     */
+    private function recordItemChanges(Item $item, array $data, $user)
+    {
+        $trackableFields = ['name', 'location_id', 'status_id', 'parent_id'];
+        
+        foreach ($trackableFields as $field) {
+            if (isset($data[$field])) {
+                $oldValue = $item->$field;
+                $newValue = $data[$field];
+                
+                // Only record if the value actually changed
+                if ($oldValue !== $newValue) {
+                    History::create([
+                        'item_id' => $item->id,
+                        'user_id' => $user->id,
+                        'field_name' => $field,
+                        'old_value' => $oldValue,
+                        'new_value' => $newValue,
+                        'changed_at' => now(),
+                    ]);
+                }
+            }
         }
     }
 
@@ -121,6 +153,10 @@ class ItemController extends Controller
         if (isset($request->childrens)) {
             $item->childrens;
         }
+        
+        /* Load labels relationship */
+        $item->load('labels');
+        
         return $item;
     }
 
@@ -150,6 +186,9 @@ class ItemController extends Controller
         ]);
 
         $this->checkParents($item->team_id, $data);
+
+        // Track changes before updating
+        $this->recordItemChanges($item, $data, $user);
 
         $item->update($data);
         return $item->refresh();

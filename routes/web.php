@@ -1,9 +1,7 @@
 <?php
 
 use App\Http\Controllers\ItemController;
-use App\Models\Item;
-use App\Models\Location;
-use App\Models\Status;
+use App\Http\Controllers\KanbanController;
 use Illuminate\Foundation\Application;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -33,40 +31,29 @@ Route::get('/', function () {
 
 Route::post('/item/{item}', [ItemController::class, 'update']);
 
-Route::get('/kanban/{type}', function(Request $request, String $type) {
-    $user = $request->user();
-    $team_id = $user->current_team_id;
-    $query = null;
-
-    switch ($type) {
-        default:
-        case "status":
-            $query = ["model" => Status::class, "field" => "status_id"];
-            break;
-        case "location":
-            $query = ["model" => Location::class, "field" => "location_id"];
-            break;
-    }
-
-    $jsonData = [];
-    foreach($query['model']::where(["team_id" => $team_id])->with('items')->get() as $instance) {
-        $boardItem = [];
-        foreach($instance->items as $item) {
-            if(!$item->parent_id) {
-                array_push($boardItem, [
-                    "id" => $item->id,
-                    "title" => $item->name
-                ]);
-            }
-        }
-        array_push($jsonData, [
-            "id" => $instance->id,
-            "title" => $instance->name,
-            "item" => $boardItem
-        ]);
-    }
-
-    return view('kanban')->with('jsonData', json_encode($jsonData))->with('field', $query['field']);
+// Kanban routes
+Route::middleware('auth:sanctum')->group(function () {
+    // Specific routes must come BEFORE generic {type} route
+    Route::get('/kanban/activity', [KanbanController::class, 'activity']);
+    Route::get('/kanban/history', [KanbanController::class, 'getRecentHistory']);
+    Route::get('/kanban/search', [KanbanController::class, 'search']);
+    Route::get('/kanban/item/{itemId}', [KanbanController::class, 'getItemDetails']);
+    Route::post('/kanban/update-item', [KanbanController::class, 'updateItemByBarcode']);
+    Route::post('/kanban/status', [KanbanController::class, 'createStatus']);
+    Route::patch('/kanban/status/{statusId}', [KanbanController::class, 'updateStatus']);
+    Route::delete('/kanban/status/{statusId}', [KanbanController::class, 'deleteStatus']);
+    Route::post('/kanban/location', [KanbanController::class, 'createLocation']);
+    Route::patch('/kanban/location/{locationId}', [KanbanController::class, 'updateLocation']);
+    Route::delete('/kanban/location/{locationId}', [KanbanController::class, 'deleteLocation']);
+    
+    // Generic route must come LAST
+    Route::get('/kanban/{type}', [KanbanController::class, 'index']);
+    Route::get('/kanban/labels', [KanbanController::class, 'getLabels']);
+    Route::post('/kanban/label', [KanbanController::class, 'createLabel']);
+    Route::patch('/kanban/label/{labelId}', [KanbanController::class, 'updateLabel']);
+    Route::delete('/kanban/label/{labelId}', [KanbanController::class, 'deleteLabel']);
+    Route::post('/kanban/item/{itemId}/labels', [KanbanController::class, 'addLabelToItem']);
+    Route::delete('/kanban/item/{itemId}/labels/{labelId}', [KanbanController::class, 'removeLabelFromItem']);
 });
 
 Route::middleware(['auth:sanctum', 'verified'])->get('/dashboard', function () {

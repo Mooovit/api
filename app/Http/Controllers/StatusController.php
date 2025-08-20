@@ -77,9 +77,9 @@ class StatusController extends Controller
     {
         $user = $request->user();
 
-        /* We check that the user can get a location in that team */
-        if (!$user->hasTeamPermission($status->team, 'location:read') ||
-            !$user->tokenCan('location:read')
+        /* We check that the user can get a status in that team */
+        if (!$user->hasTeamPermission($status->team, 'status:read') ||
+            !$user->tokenCan('status:read')
         ) {
             throw new AuthorizationException();
         }
@@ -100,8 +100,8 @@ class StatusController extends Controller
         $user = $request->user();
 
         /* We check that the user can update a status in the team */
-        if (!$user->hasTeamPermission($status->team, 'location:write') ||
-            !$user->tokenCan('location:write')
+        if (!$user->hasTeamPermission($status->team, 'status:write') ||
+            !$user->tokenCan('status:write')
         ) {
             throw new AuthorizationException();
         }
@@ -127,8 +127,8 @@ class StatusController extends Controller
     {
         $user = $request->user();
 
-        if (!$user->hasTeamPermission($status->team, 'location:write') ||
-            !$user->tokenCan('location:write')
+        if (!$user->hasTeamPermission($status->team, 'status:write') ||
+            !$user->tokenCan('status:write')
         ) {
             throw new AuthorizationException();
         }
