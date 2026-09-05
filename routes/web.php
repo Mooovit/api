@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\ItemController;
 use App\Http\Controllers\KanbanController;
+use App\Http\Controllers\BackupScheduleController;
 use Illuminate\Foundation\Application;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -59,3 +60,14 @@ Route::middleware('auth:sanctum')->group(function () {
 Route::middleware(['auth:sanctum', 'verified'])->get('/dashboard', function () {
     return Inertia::render('Dashboard');
 })->name('dashboard');
+
+// Auto-backup schedules (API-020) — server UI, one schedule per team;
+// POST for writes (host load balancer — no PATCH), DELETE where natural.
+Route::middleware(['auth:sanctum', 'verified'])->group(function () {
+    Route::get('/teams/{team}/backups/schedule', [BackupScheduleController::class, 'show'])
+        ->name('backups.schedules.show');
+    Route::post('/teams/{team}/backups/schedule', [BackupScheduleController::class, 'store'])
+        ->name('backups.schedules.store');
+    Route::delete('/teams/{team}/backups/schedule', [BackupScheduleController::class, 'destroy'])
+        ->name('backups.schedules.destroy');
+});

@@ -24,7 +24,9 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule)
     {
-        // $schedule->command('inspire')->hourly();
+        /* API-020: auto-backup schedules are checked every 5 minutes;
+           withoutOverlapping keeps a slow dump from piling up runs. */
+        $schedule->command('moovit:auto-backups')->everyFiveMinutes()->withoutOverlapping();
     }
 
     /**

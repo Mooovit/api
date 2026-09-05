@@ -4,13 +4,13 @@ namespace App\Http\Controllers;
 
 use App\Models\Backup;
 use App\Models\Team;
+use App\Services\BackupService;
 use App\Support\TeamRevision;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Str;
 use ZipArchive;
 
 /**
@@ -20,6 +20,8 @@ use ZipArchive;
  * `backups/{team_id}/{backup_id}.zip`. The row records the creator
  * ("this backup belongs to that user"); retention keeps the last 7 backups
  * per team — older rows are deleted together with their stored files.
+ * Creation goes through `BackupService` — shared with the auto-backup
+ * scheduler (API-020).
  *
  * Every client-facing shape flows through `Backup::metadata()` — filesystem
  * paths never leave the server; the download URL requires an authenticated
@@ -27,24 +29,18 @@ use ZipArchive;
  */
 class BackupController extends Controller
 {
-    /** Backups kept per team after each create. */
-    private const RETENTION = 7;
+    /**
+     * @var BackupService
+     */
+    private $service;
 
     /**
-     * The entity tables dumped into the archive, keyed by CSV file name.
-     * Plain query builder (not Eloquent): all rows, all columns, no model
-     * machinery — the raw table content is the snapshot.
-     *
-     * @return array<string, \Illuminate\Database\Query\Builder>
+     * @param BackupService $service
+     * @return void
      */
-    private function dumps(string $teamId): array
+    public function __construct(BackupService $service)
     {
-        return [
-            'items' => DB::table('items')->where('team_id', $teamId)->orderBy('created_at'),
-            'locations' => DB::table('locations')->where('team_id', $teamId)->orderBy('created_at'),
-            'statuses' => DB::table('statuses')->where('team_id', $teamId)->orderBy('created_at'),
-            'labels' => DB::table('labels')->where('team_id', $teamId)->orderBy('created_at'),
-        ];
+        $this->service = $service;
     }
 
     /**
@@ -93,11 +89,9 @@ class BackupController extends Controller
     }
 
     /**
-     * POST api/backups (API-018) — snapshot the effective team: one CSV per
-     * entity into a zip on the `local` disk, then the metadata row, then
-     * retention (keep the last 7 of the team) and a single revision bump
-     * (API-003 — backup rows are not observer-registered, retention pruning
-     * is internal cleanup riding along with the create).
+     * POST api/backups (API-018) — snapshot the effective team via
+     * `BackupService::createForTeam` (dump → row → retention → revision
+     * bump, shared with the auto-backup scheduler).
      *
      * @param Request $request
      * @return JsonResponse
@@ -106,82 +100,10 @@ class BackupController extends Controller
     public function store(Request $request): JsonResponse
     {
         $team = $this->authorizeTeam($request, 'item:write');
-        $user = $request->user();
 
-        /* The id is minted up front — the storage path carries it */
-        $id = (string) Str::uuid();
-        $path = "backups/{$team->id}/{$id}.zip";
-
-        /* Stream each table into the archive: header line + every row */
-        $temp = tempnam(sys_get_temp_dir(), 'backup');
-        $zip = new ZipArchive();
-        $zip->open($temp, ZipArchive::CREATE | ZipArchive::OVERWRITE);
-
-        $counts = [];
-        foreach ($this->dumps($team->id) as $name => $query) {
-            $fh = fopen('php://temp', 'r+');
-            $counts[$name] = 0;
-            foreach ($query->cursor() as $row) {
-                $row = (array) $row;
-                if ($counts[$name] === 0) {
-                    fputcsv($fh, array_keys($row), ',', '"', '\\');
-                }
-                fputcsv($fh, $row, ',', '"', '\\');
-                $counts[$name]++;
-            }
-            rewind($fh);
-            $zip->addFromString("{$name}.csv", stream_get_contents($fh));
-            fclose($fh);
-        }
-        $zip->close();
-
-        $bytes = file_get_contents($temp);
-        unlink($temp);
-        Storage::disk('local')->put($path, $bytes);
-
-        $backup = Backup::create([
-            'id' => $id,
-            'team_id' => $team->id,
-            'user_id' => $user->id,
-            'disk' => 'local',
-            'path' => $path,
-            'size' => strlen($bytes),
-            'item_count' => $counts['items'],
-            'location_count' => $counts['locations'],
-            'status_count' => $counts['statuses'],
-            'label_count' => $counts['labels'],
-        ]);
-
-        $this->prune($team->id);
-
-        /* Backup rows fire no revision observer — bump explicitly */
-        TeamRevision::bump($backup);
+        $backup = $this->service->createForTeam($team, $request->user());
 
         return response()->json($backup->metadata(), 201);
-    }
-
-    /**
-     * Retention: after each create, keep only the last `RETENTION` backups
-     * of the team — older rows are deleted together with their stored files
-     * (rows count: a manual DELETE frees a slot).
-     *
-     * @param string $teamId
-     * @return void
-     */
-    private function prune(string $teamId): void
-    {
-        Backup::where('team_id', $teamId)
-            ->orderByDesc('created_at')
-            ->orderByDesc('id')
-            ->skip(self::RETENTION)
-            ->take(PHP_INT_MAX) /* OFFSET needs a LIMIT (SQLite/Postgres) */
-            ->get()
-            ->each(function (Backup $stale): void {
-                DB::transaction(function () use ($stale): void {
-                    $stale->delete();
-                    Storage::disk($stale->disk)->delete($stale->path);
-                });
-            });
     }
 
     /**

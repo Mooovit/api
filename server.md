@@ -435,8 +435,28 @@ the fleet.
 > left the table are `removed`. The inverse direction reports the inverse
 > sets.
 >
-> Follow-ups: scheduled auto-backups (API-020); S3 offload with the
-> 7-backup cap applying only without a bucket (API-021).
+> **Auto-backup schedules (2026-09, API-020)** — one schedule per team
+> (`backup_schedules`, unique `team_id`): `frequency` daily/weekly/monthly/
+> yearly, `enabled` (default true), `user_id` = configurator (provenance),
+> `last_run_at`/`next_run_at`. Configured from the **server UI** (web,
+> session-auth + verified): `GET/POST/DELETE /teams/{team}/backups/schedule`
+> (POST upserts — no PATCH on this host; `item:read` for the page,
+> `item:write` to save/delete; membership + Jetstream permission + tokenCan,
+> TransientToken covers session auth). Saving with `enabled` computes
+> `next_run_at` from **now at save time**; disabling clears it. The
+> `moovit:auto-backups` command (scheduled every 5 min,
+> `withoutOverlapping()`) processes due schedules (`enabled` +
+> `next_run_at <= now`) ordered by `next_run_at`: one savepoint per schedule
+> through the same `BackupService::createForTeam` as the manual API
+> (retention included), attributed to the schedule's `user_id`, then
+> `advance()` stamps `last_run_at` and recomputes `next_run_at` from the
+> run time. One DB transaction per schedule — a failing team is reported
+> and left unadvanced (retried next tick) without blocking the others.
+> Month edges follow Carbon's default `addMonth()` **overflow** (Jan 31
+> monthly → Mar 3, not Feb 28) — pinned by tests.
+>
+> Follow-ups: S3 offload with the 7-backup cap applying only without a
+> bucket (API-021).
 
 ---
 
