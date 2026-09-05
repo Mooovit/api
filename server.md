@@ -349,6 +349,44 @@ the fleet.
 
 ---
 
+## 12. Cross-team item transfer
+
+> **Implemented (2026-09, API-016)** — `POST api/item/:id/transfer`
+> (`{team_id, location_id?, status_id?}`) moves an item — and its **whole
+> subtree** (children, grandchildren…; a parent link never crosses teams, so
+> nothing living is left behind) — to another team, with **`item:write` on
+> both sides** (source = the item's team, destination = explicit membership;
+> team permission **and** token ability; read-only members and narrow tokens
+> are 403).
+>
+> Semantics: `team_id` must exist and differ from the source (422); optional
+> `location_id`/`status_id` belong to the **root only**, must belong to the
+> destination team (422 otherwise) and are applied in the same transaction as
+> the move; when omitted the current values carry over (a follow-up
+> bulk-assign can re-point them) — descendants always keep their
+> location/status. The root is detached from its source-team parent to root
+> (one history row, API-008 semantics; reported as `detached_parent`);
+> intra-subtree parent links are preserved. Trashed descendants are
+> tombstones — they stay behind.
+>
+> Side effects, all in one transaction (any failure rolls back everything):
+> one `team_id` history row per transferred item (+ the root's parent detach
+> and location/status rows); source-team labels detached from every moved
+> item and reported as `detached_label_ids` (destination labels are never
+> auto-attached); barcodes and attachments follow their item (`team_id`
+> rewritten); team revision bumped on **both** teams (API-003) — the
+> destination's delta feed carries all moved rows as `changed`, the source's
+> never does (the rows left its scope; its bumped revision sends clients
+> re-pulling). Per-team barcode-registry uniqueness (API-011) is enforced
+> across the whole subtree first: any code already held by the destination
+> team on an item outside the moved subtree refuses the transfer with 409
+> and **nothing changes**.
+>
+> Response: the root item in the `show()` shape plus additive metadata
+> `detached_label_ids: [...]` and `detached_parent: bool`.
+
+---
+
 ## Suggested order
 
 1. **Idea 1** (`updated_at` on lists) — one field, unblocks three client

@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Attachment;
 use App\Models\History;
 use App\Models\Item;
+use App\Models\ItemBarcode;
 use App\Models\Location;
 use App\Models\Status;
 use App\Models\Team;
@@ -214,6 +216,233 @@ class ItemController extends Controller
             $item->update($data);
             return $item->refresh();
         });
+    }
+
+    /**
+     * POST api/item/{item}/transfer (API-016) — move an item to another team.
+     * POST only: the host does not support PATCH.
+     *
+     * The item's WHOLE SUBTREE transfers with it (children, grandchildren…):
+     * a parent link never crosses teams, so leaving any child behind is not
+     * an option. Within the subtree parent links are preserved; only the
+     * root is detached from its (source-team) parent, reported as
+     * `detached_parent`. Trashed descendants are tombstones — they stay
+     * behind (they are invisible everywhere, like any soft-deleted item).
+     *
+     * Permission checks on BOTH sides: the requester needs `item:write` on
+     * the root's own (source) team and on the destination team, via team
+     * permission and token ability. The optional destination `location_id`/
+     * `status_id` belong to the ROOT only, must belong to the destination
+     * team and are applied in the same transaction as the team move; when
+     * omitted the current values carry over. Descendants keep their
+     * location/status (a follow-up bulk-assign can re-point them).
+     *
+     * Source-team labels are detached from every transferred item
+     * (destination labels are never auto-attached) and reported as
+     * `detached_label_ids`. Barcodes and attachments follow their item:
+     * their `team_id` is rewritten in the same transaction, but per-team
+     * registry uniqueness (API-011) is enforced across the whole subtree
+     * first — any code already held by the destination team on an item
+     * OUTSIDE the moved subtree refuses the whole transfer with 409 and
+     * NOTHING changes.
+     *
+     * Everything (item updates, label detachments, history rows, both team
+     * revision bumps) runs in one transaction. One history row per
+     * transferred item records the `team_id` move (+ the root's parent
+     * detach, API-008 semantics). The two revision bumps (API-003) are the
+     * signal for both teams' sync clients to re-pull — the source's delta
+     * feed never carries the rows (they no longer match the source's team
+     * scope), source clients see them disappear on their next full pull.
+     *
+     * @param Request $request
+     * @param Item $item
+     * @return JsonResponse
+     * @throws AuthorizationException|ValidationException
+     */
+    public function transfer(Request $request, Item $item): JsonResponse
+    {
+        $user = $request->user();
+
+        /* Source side: the item's own team (API-001 pattern) */
+        if (!$user->hasTeamPermission($item->team, 'item:write') ||
+            !$user->tokenCan('item:write')
+        ) {
+            throw new AuthorizationException();
+        }
+
+        $data = $request->validate([
+            'team_id' => 'required|string|exists:teams,id',
+            'location_id' => 'nullable|string|exists:locations,id',
+            'status_id' => 'nullable|string|exists:statuses,id',
+        ]);
+
+        /* Destination side: same permission on the receiving team */
+        $destination = Team::findOrFail($data['team_id']);
+        if ($destination->id === $item->team_id) {
+            throw ValidationException::withMessages([
+                'team_id' => 'The item already belongs to this team.',
+            ]);
+        }
+        if (!$user->hasTeamPermission($destination, 'item:write') ||
+            !$user->tokenCan('item:write')
+        ) {
+            throw new AuthorizationException();
+        }
+
+        /* Optional relocation of the ROOT — both references must belong to
+           the DESTINATION team (not the item's current one) */
+        $errors = [];
+        $locationId = Arr::get($data, 'location_id');
+        $statusId = Arr::get($data, 'status_id');
+        if ($locationId &&
+            Location::where('id', $locationId)->where('team_id', $destination->id)->doesntExist()
+        ) {
+            $errors['location_id'] = 'The selected location does not belong to the destination team.';
+        }
+        if ($statusId &&
+            Status::where('id', $statusId)->where('team_id', $destination->id)->doesntExist()
+        ) {
+            $errors['status_id'] = 'The selected status does not belong to the destination team.';
+        }
+        if ($errors) {
+            throw ValidationException::withMessages($errors);
+        }
+
+        $conflict = false;
+        [$detachedParent, $detachedLabelIds] = DB::transaction(function () use ($item, $user, $destination, $locationId, $statusId, &$conflict) {
+            $oldTeamId = $item->team_id;
+            $oldParentId = $item->parent_id;
+            $transferredAt = now();
+
+            /* The whole subtree moves: a parent link never crosses teams. */
+            $ids = [$item->id];
+            $queue = [$item->id];
+            while ($queue) {
+                $next = Item::whereIn('parent_id', $queue)->pluck('id')->all();
+                $ids = array_merge($ids, $next);
+                $queue = $next;
+            }
+
+            /* Registry uniqueness is per team (API-011): any code held by the
+               destination team on an item OUTSIDE the moved subtree refuses
+               the transfer — nothing has been written yet, everything below
+               never runs. */
+            $codes = ItemBarcode::whereIn('item_id', $ids)->pluck('code');
+            if ($codes->isNotEmpty() &&
+                ItemBarcode::where('team_id', $destination->id)
+                    ->whereIn('code', $codes)
+                    ->whereNotIn('item_id', $ids)
+                    ->exists()
+            ) {
+                $conflict = true;
+
+                return [false, []];
+            }
+
+            /* History: one team_id row per transferred item; the root
+               additionally gets the parent detach (old parent -> null,
+               API-008 semantics) and the optional location/status move. */
+            foreach ($ids as $id) {
+                History::create([
+                    'item_id' => $id,
+                    'user_id' => $user->id,
+                    'field_name' => 'team_id',
+                    'old_value' => $oldTeamId,
+                    'new_value' => $destination->id,
+                    'changed_at' => $transferredAt,
+                ]);
+            }
+            $detachedParent = $oldParentId !== null;
+            if ($detachedParent) {
+                History::create([
+                    'item_id' => $item->id,
+                    'user_id' => $user->id,
+                    'field_name' => 'parent_id',
+                    'old_value' => $oldParentId,
+                    'new_value' => null,
+                    'changed_at' => $transferredAt,
+                ]);
+            }
+            if ($locationId && $locationId !== $item->location_id) {
+                History::create([
+                    'item_id' => $item->id,
+                    'user_id' => $user->id,
+                    'field_name' => 'location_id',
+                    'old_value' => $item->location_id,
+                    'new_value' => $locationId,
+                    'changed_at' => $transferredAt,
+                ]);
+            }
+            if ($statusId && $statusId !== $item->status_id) {
+                History::create([
+                    'item_id' => $item->id,
+                    'user_id' => $user->id,
+                    'field_name' => 'status_id',
+                    'old_value' => $item->status_id,
+                    'new_value' => $statusId,
+                    'changed_at' => $transferredAt,
+                ]);
+            }
+
+            /* Source-team labels are detached from every transferred item;
+               others (already cross-team) stay — destination labels are
+               never auto-attached. */
+            $detachedLabelIds = [];
+            foreach (Item::whereIn('id', $ids)->get() as $row) {
+                $detached = $row->labels()
+                    ->where('labels.team_id', $oldTeamId)
+                    ->pluck('labels.id');
+                if ($detached->isNotEmpty()) {
+                    $row->labels()->detach($detached->all());
+                    $detachedLabelIds = array_merge($detachedLabelIds, $detached->all());
+                }
+            }
+
+            /* Barcodes + attachments follow their item (their team
+               reservation / ownership is rewritten). Mass updates fire no
+               model events. */
+            ItemBarcode::whereIn('item_id', $ids)->update(['team_id' => $destination->id]);
+            Attachment::whereIn('item_id', $ids)->update(['team_id' => $destination->id]);
+
+            Item::whereIn('id', $ids)->update([
+                'team_id' => $destination->id,
+                'updated_at' => $transferredAt,
+            ]);
+            /* Root only: detach from the source-team parent + optional
+               destination location/status. */
+            Item::whereKey($item->id)->update([
+                'parent_id' => null,
+                'location_id' => $locationId ?? $item->location_id,
+                'status_id' => $statusId ?? $item->status_id,
+            ]);
+
+            /* API-003 bump on BOTH teams — the source's bump is how its
+               clients learn something left (the rows themselves no longer
+               match the source's team scope in delta pulls). */
+            Team::whereKey($oldTeamId)->increment('revision');
+            Team::whereKey($destination->id)->increment('revision');
+
+            return [$detachedParent, $detachedLabelIds];
+        });
+
+        if ($conflict) {
+            return response()->json([
+                'error' => 'A code of this item is already registered in the destination team',
+            ], 409);
+        }
+
+        /* show() shape of the root + additive transfer metadata */
+        $item->refresh()->load(['labels', 'barcodes']);
+        $item->setRelation('attachments',
+            $item->attachments->map(fn ($attachment) => $attachment->metadata())->values());
+
+        return response()->json(array_merge(
+            $item->toArray(),
+            [
+                'detached_label_ids' => $detachedLabelIds,
+                'detached_parent' => $detachedParent,
+            ],
+        ));
     }
 
     /**

@@ -79,6 +79,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('item/{item}/move', [ItemController::class, 'move']);
     Route::post('item/{item}/assign', [ItemController::class, 'assign']);
     Route::post('item/{item}/rename', [ItemController::class, 'rename']);
+    /* API-016: cross-team item transfer (permission checks on both teams) */
+    Route::post('item/{item}/transfer', [ItemController::class, 'transfer']);
     Route::resource('status', StatusController::class);
     Route::resource('location', LocationController::class);
     
