@@ -18,3 +18,4 @@ db.sqlite
 package-lock.json
 composer.lock
 deploy.sh
+.DS_Store
