@@ -210,6 +210,16 @@ class ItemController extends Controller
      * Adds the team's current revision counter as `X-Revision` (API-003) so a
      * client that just pulled can remember it without a second call.
      *
+     * API-006 delta sync: with `?since=<ISO-8601>` the response becomes
+     * `{ changed: [...], deleted_ids: [...] }` — full rows (same shape as the
+     * plain list) whose `updated_at > since`, plus the team-scoped ids
+     * soft-deleted after `since`. Creations are included in `changed`
+     * (`updated_at >= created_at`); tombstones never surface as bodies (the
+     * SoftDeletes global scope keeps them out of `changed`). Without `since`
+     * the plain array is returned, unchanged. Timestamps have second
+     * precision — clients pair this with the API-003 revision counter and
+     * re-pull when it moves.
+     *
      * @param Request $request
      * @return JsonResponse
      * @throws AuthorizationException
@@ -222,6 +232,25 @@ class ItemController extends Controller
             !$user->tokenCan('item:read')
         ) {
             throw new AuthorizationException();
+        }
+
+        /* Delta feed — strict `>`: the client remembers the max updated_at
+           it saw. Tombstones surface only in `deleted_ids`. */
+        if ($request->filled('since')) {
+            $request->validate(['since' => 'date']);
+            $since = $request->date('since');
+
+            return response()
+                ->json([
+                    'changed' => Item::where('team_id', $user->current_team_id)
+                        ->where('updated_at', '>', $since)
+                        ->get(),
+                    'deleted_ids' => Item::onlyTrashed()
+                        ->where('team_id', $user->current_team_id)
+                        ->where('deleted_at', '>', $since)
+                        ->pluck('id'),
+                ])
+                ->header('X-Revision', (string) $user->currentTeam->revision);
         }
 
         return response()

@@ -42,6 +42,16 @@ web SPA ignores extra fields.
 
 ## 2. Delta sync: `?since=` + deletions feed
 
+> **Implemented (2026-09, API-006)** — `GET api/item?since=<ISO-8601>` returns
+> `{"changed": [...], "deleted_ids": [...]}`: full rows (same shape as the plain
+> list) with `updated_at > since` (creations included, tombstones excluded — a
+> deleted box only ever surfaces in `deleted_ids`), plus the team-scoped ids
+> soft-deleted after `since`. Without `since` the plain array is unchanged;
+> `X-Revision` rides on both shapes; garbage `since` → 422. Timestamps have
+> second precision — pair with the API-003 counter and re-pull when it moves.
+> Pinned by `tests/Feature/ItemDeltaSyncTest.php`. Status/location/labels delta
+> stays out of scope (tiny tables).
+
 > **Prerequisite done (2026-09, API-005)** — items are now **soft-deleted**
 > (`items.deleted_at` + index, `SoftDeletes` on the model). Deletions survive as
 > tombstone rows while every existing query/route behaves as before. Pinned by
