@@ -19,6 +19,13 @@ implementation (client + server).
 
 ## 1. `updated_at` on every list payload *(smallest, do first)*
 
+> **Verified (2026-09, API-002)** — the idea is stale against this codebase: all list
+> payloads (`api/item`, `api/status`, `api/location`, `api/labels`) already return full
+> models including `updated_at`/`created_at` in ISO-8601 UTC. Now pinned by
+> `tests/Feature/UpdatedAtContractTest.php` (lists + single item + history `changed_at`),
+> so the fields cannot silently regress. Client follow-ups (MV-047/MV-044) can rely on
+> it once a server release is deployed.
+
 **Why** — `GET api/item` returns items *without* `updated_at` (only
 `GET api/item/:id` carries it). The Android cache therefore cannot order by
 recency (the dashboard's "recently updated" works off partial data, MV-047)

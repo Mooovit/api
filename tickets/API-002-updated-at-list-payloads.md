@@ -3,7 +3,7 @@ id: API-002
 title: "Verify & pin updated_at on every list payload"
 type: chore
 priority: P0
-status: ready
+status: in-review
 depends_on: [API-001]
 spec: "server.md §1; client contract: plan.md §2"
 ---
@@ -21,16 +21,22 @@ server.md because their client observed them missing. This ticket verifies the c
 against the deployed server, and pins the contract with tests so it can never regress.
 
 ## Scope — Must have
-- [ ] Verify against a deployed instance (`GET api/item` response actually contains
-      `updated_at`) — if the deployment runs older code, note it in the implementation
-      report; the fix is "deploy", not code.
-- [ ] Feature tests (extend API-001 suites) asserting every row of every list payload
-      carries `created_at` and `updated_at` in ISO-8601 parseable format:
-      `GET api/item`, `GET api/status`, `GET api/location`, `GET api/labels`.
-- [ ] Assert `GET api/item/:id` and `GET api/item/:id/history` timestamps too
-      (single-item + audit trail are what MV-014 compares verbatim).
-- [ ] Update `server.md` §1: mark verified/done, record the conclusion (field was already
-      present; tests now pin it) so the Android side can close MV-047/MV-044 follow-ups.
+- [x] Verify against a deployed instance — **not possible from this environment** (no
+      deployed URL/credentials available locally); verification was done against HEAD
+      via the code path (`index()` returns full Eloquent models) and is now enforced by
+      tests. **Flag for the reviewer:** confirm on the production host after deploying
+      this commit — if the deployed instance omits the field, it is running older code
+      and the fix is "deploy", not code.
+- [x] Feature tests (`tests/Feature/UpdatedAtContractTest.php`) asserting every row of
+      every list payload carries `created_at` and `updated_at` in ISO-8601 UTC format
+      (`Y-m-d\TH:i:s.u\Z`, matching Laravel 8's default serialization that the client
+      compares verbatim): `GET api/item`, `GET api/status`, `GET api/location`,
+      `GET api/labels`.
+- [x] `GET api/item/:id` timestamps asserted; `GET api/item/:id/history` asserts
+      `changed_at` (the audit-trail timestamp MV-014 orders by) plus `created_at`/
+      `updated_at` on every row.
+- [x] `server.md` §1 updated with the finding (verified stale idea; tests now pin it;
+      client follow-ups MV-047/MV-044 can rely on it once deployed).
 
 ## Out of scope
 - Any serializer/filter change (fields are already sent; adding an API Resource layer is a
@@ -38,9 +44,10 @@ against the deployed server, and pins the contract with tests so it can never re
 - Pagination or partial responses on lists (server.md §2 territory, API-006).
 
 ## Acceptance criteria
-- [ ] All four list endpoints have a green test asserting `updated_at` presence + format.
-- [ ] If a payload is ever missing the field, the suite fails loudly.
-- [ ] `server.md` §1 updated with the finding.
+- [x] All four list endpoints have a green test asserting `updated_at` presence + format.
+- [x] If a payload is ever missing the field, the suite fails loudly
+      (`assertIsoTimestamp` fails on null/malformed values with a message naming the field).
+- [x] `server.md` §1 updated with the finding.
 
 ## Technical notes
 - Laravel serializes `updated_at` as `2025-08-20T12:34:56.000000Z` (ISO-8601 UTC) — the
@@ -56,3 +63,25 @@ small dedicated `UpdatedAtContractTest`).
 ## Documentation requirements
 - `server.md` §1 status note.
 - PHPDoc not needed beyond what API-001 established.
+
+## Implementation report (2026-09-05)
+
+**Result: `vendor/bin/phpunit --filter UpdatedAtContractTest` → PASS (6 tests, 53
+assertions); full suite PASS (106 tests, 270 assertions, 4 skipped).**
+
+Files added:
+- `tests/Feature/UpdatedAtContractTest.php` — six tests, one per pinned endpoint:
+  item/status/location/labels indexes (per-row `created_at` + `updated_at`), item show,
+  and item history (`changed_at` + row timestamps). All values are checked against the
+  strict regex `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$` so any change to
+  serialization (dropped microseconds, timezone suffix, missing field) fails loudly.
+
+Files changed:
+- `server.md` §1 — "Verified (2026-09, API-002)" banner recording that the idea was
+  stale, the fields were always present, and the contract is now pinned.
+
+No production code was touched (the ticket's premise: nothing to fix, only pin).
+
+## Reviewer notes
+- Deployed-instance verification is the one open item — see the scope note above.
+  Everything else is enforced by the suite.
