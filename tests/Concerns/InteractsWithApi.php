@@ -51,12 +51,20 @@ trait InteractsWithApi
     /**
      * Authenticate the client as a user through a real Sanctum token.
      *
+     * Flushes the cached auth guards first: Sanctum's guard is a RequestGuard
+     * that memoizes the resolved user, and the guard instance (held by the
+     * app container) survives across requests inside one test — without the
+     * flush, every request after the first would reuse the first token's
+     * user, abilities and loaded relations.
+     *
      * @param User $user
      * @param array $abilities token abilities, ['*'] grants everything
      * @return self
      */
     protected function actingAsApi(User $user, array $abilities = ['*']): self
     {
+        $this->app['auth']->forgetGuards();
+
         $token = $user->createToken('test-token', $abilities)->plainTextToken;
 
         return $this->withToken($token);

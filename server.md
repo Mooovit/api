@@ -182,6 +182,12 @@ collides with another item's id.
 
 ## 9. Cheap change detection (revision counter / ETag)
 
+> **Implemented (2026-09, API-003)** — `GET api/revision` → `{"revision": n}` and an
+> `X-Revision` header on `GET api/item`. The per-team counter (`teams.revision`) is
+> bumped atomically on every team-scoped write — items/statuses/locations/labels CRUD
+> (observers) and label attach/detach (explicit, pivot writes fire no model events).
+> No-op writes (nothing dirty) do not bump. Pinned by `tests/Feature/RevisionApiTest.php`.
+
 **Why** — the sync icon polls the full list to learn "did anything change?"
 (§4.14). Even with idea 2, the client still asks a question the server could
 answer in one integer.

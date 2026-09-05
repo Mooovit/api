@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Label;
 use App\Models\Item;
+use App\Support\TeamRevision;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -137,6 +138,9 @@ class LabelController extends Controller
 
         $item->labels()->attach($data['label_id']);
 
+        /* Pivot writes fire no model events — bump the team revision explicitly (API-003) */
+        TeamRevision::bump($item);
+
         return response()->json([
             'success' => true,
             'item' => $item->fresh(['labels'])
@@ -167,6 +171,9 @@ class LabelController extends Controller
         }
 
         $item->labels()->detach($label->id);
+
+        /* Pivot writes fire no model events — bump the team revision explicitly (API-003) */
+        TeamRevision::bump($item);
 
         return response()->json([
             'success' => true,

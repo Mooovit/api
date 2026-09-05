@@ -38,6 +38,23 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/teams', function (Request $request) {
         return $request->user()->allTeams();
     });
+    /* API-003: cheap change detection — clients poll this integer (or the
+       X-Revision header on GET api/item) instead of pulling the full list */
+    Route::get('/revision', function (Request $request) {
+        $user = $request->user();
+        $team = $user->currentTeam;
+
+        /* Mirrors the read endpoints: team membership + at least one read ability */
+        $canRead = $team instanceof \App\Models\Team
+            && $user->belongsToTeam($team)
+            && ($user->tokenCan('item:read') || $user->tokenCan('status:read') || $user->tokenCan('location:read'));
+
+        if (!$canRead) {
+            throw new \Illuminate\Auth\Access\AuthorizationException();
+        }
+
+        return response()->json(['revision' => (int) $team->revision]);
+    });
 
     Route::resource('item', ItemController::class);
     Route::get('item/{item}/history', [HistoryController::class, 'index']);

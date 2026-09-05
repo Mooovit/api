@@ -11,7 +11,6 @@ use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
-use Illuminate\Support\Collection;
 
 class ItemController extends Controller
 {
@@ -74,11 +73,14 @@ class ItemController extends Controller
     /**
      * Display a listing of the resource.
      *
+     * Adds the team's current revision counter as `X-Revision` (API-003) so a
+     * client that just pulled can remember it without a second call.
+     *
      * @param Request $request
-     * @return Collection
+     * @return JsonResponse
      * @throws AuthorizationException
      */
-    public function index(Request $request): Collection
+    public function index(Request $request): JsonResponse
     {
         $user = $request->user();
         /* We check that the user is allowed to read list of items */
@@ -88,7 +90,9 @@ class ItemController extends Controller
             throw new AuthorizationException();
         }
 
-        return Item::where('team_id', $user->current_team_id)->get();
+        return response()
+            ->json(Item::where('team_id', $user->current_team_id)->get())
+            ->header('X-Revision', (string) $user->currentTeam->revision);
     }
 
     /**
