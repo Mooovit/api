@@ -28,6 +28,11 @@ class Backup extends Model
         'location_count',
         'status_count',
         'label_count',
+        'remote',
+    ];
+
+    protected $casts = [
+        'remote' => 'boolean',
     ];
 
     /**

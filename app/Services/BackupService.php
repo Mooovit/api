@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Exceptions\BackupCopyException;
 use App\Models\Backup;
 use App\Models\Team;
 use App\Models\User;
@@ -9,19 +10,36 @@ use App\Support\TeamRevision;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Throwable;
 use ZipArchive;
 
 /**
- * Shared savepoint machinery (API-018/020): dump a team's entity tables as
- * one CSV each into a zip on the `local` disk, record the Backup row, apply
- * the last-7 retention and bump the team revision. Used by the API controller
- * (manual savepoints) and the auto-backup scheduler command (API-020) — one
- * dump implementation, two entry points.
+ * Shared savepoint machinery (API-018/020/021): dump a team's entity tables
+ * as one CSV each into a zip on the `local` disk, record the Backup row,
+ * apply the last-7 retention and bump the team revision. Used by the API
+ * controller (manual savepoints) and the auto-backup scheduler command
+ * (API-020) — one dump implementation, two entry points. When the team has
+ * S3 configured (API-021) the zip is copied off before the row is recorded;
+ * a failed copy leaves no row and no local file.
  */
 class BackupService
 {
     /** Backups kept per team after each create. */
     public const RETENTION = 7;
+
+    /**
+     * @var S3BackupClientFactory
+     */
+    private $s3;
+
+    /**
+     * @param S3BackupClientFactory $s3
+     * @return void
+     */
+    public function __construct(S3BackupClientFactory $s3)
+    {
+        $this->s3 = $s3;
+    }
 
     /**
      * Snapshot a team: one CSV per entity (items — soft-deleted tombstones
@@ -68,6 +86,26 @@ class BackupService
         unlink($temp);
         Storage::disk('local')->put($path, $bytes);
 
+        /* API-021: copy-off when the team has S3 configured. One attempt —
+           a failed copy leaves NO row and no unreferenced local file (the
+           caller maps this to a 502; the scheduler retries next tick). */
+        $s3Config = $team->s3Config()->first();
+        $remote = false;
+        if ($s3Config) {
+            try {
+                $this->s3->forConfig($s3Config)->put($path, $bytes);
+                $remote = true;
+            } catch (Throwable $e) {
+                Storage::disk('local')->delete($path);
+
+                throw new BackupCopyException(
+                    "S3 copy failed: {$e->getMessage()}",
+                    0,
+                    $e
+                );
+            }
+        }
+
         $backup = Backup::create([
             'id' => $id,
             'team_id' => $team->id,
@@ -79,6 +117,7 @@ class BackupService
             'location_count' => $counts['locations'],
             'status_count' => $counts['statuses'],
             'label_count' => $counts['labels'],
+            'remote' => $remote,
         ]);
 
         $this->prune($team->id);

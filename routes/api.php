@@ -13,6 +13,7 @@ use App\Http\Controllers\LabelController;
 use App\Http\Controllers\LocationController;
 use App\Http\Controllers\ItemBarcodeController;
 use App\Http\Controllers\StatusController;
+use App\Http\Controllers\TeamS3Controller;
 use App\Http\Controllers\UserController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -122,9 +123,20 @@ Route::middleware('auth:sanctum')->group(function () {
     /* API-018: savepoint backups — CSV snapshot per team, last 7 kept */
     Route::get('backups', [BackupController::class, 'index']);
     Route::post('backups', [BackupController::class, 'store']);
+    /* API-021: objects in the team's configured bucket (declared before
+       the {backup} binding can't conflict — 'backups' vs 'backup' — but
+       keep list routes together) */
+    Route::get('backups/bucket', [BackupController::class, 'bucket']);
     Route::get('backup/{backup}', [BackupController::class, 'show']);
     Route::delete('backup/{backup}', [BackupController::class, 'destroy']);
     /* API-019: diff two savepoints (base → target) */
     Route::get('backup/{backup}/compare/{other}', [BackupController::class, 'compare']);
+
+    /* API-021: per-team S3 offload credentials (upsert / read / drop) and
+       the computed retention rules (local last-7 + bucket lifecycle) */
+    Route::post('team/s3', [TeamS3Controller::class, 'store']);
+    Route::get('team/s3', [TeamS3Controller::class, 'show']);
+    Route::get('team/s3/rules', [TeamS3Controller::class, 'rules']);
+    Route::delete('team/s3', [TeamS3Controller::class, 'destroy']);
 
 });

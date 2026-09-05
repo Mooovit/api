@@ -3,7 +3,7 @@ id: API-021
 title: "S3 offload for backups + bucket listing and rules display"
 type: feature
 priority: P2
-status: ready
+status: in-review
 depends_on: [API-018]
 spec: "user request (Matthieu, 2026-09): setup S3 credentials on the app, backups copied to the bucket, bucket listing + bucket rules shown; without S3 keep last 7 per team"
 ---
@@ -97,3 +97,50 @@ last-7 only).
   flag; bucket listing (order/shape); rules payload with/without S3; rotation
   interaction (local pruned, bucket kept); 422 no-config / 403 foreign /
   401 unauthenticated paths.
+
+## Implementation Report (2026-09)
+Status: done. 10 new tests in `tests/Feature/TeamS3Test.php`, full suite
+green (280 passed / 4 pre-existing Jetstream skips).
+
+- **Seam instead of `Storage::fake('s3')`** — per-team credentials make a
+  global `s3` disk meaningless (each team has its own bucket/keys, and the
+  SDK needs a live endpoint for lifecycle). Implemented as the ticket's
+  alternative suggestion: `S3BackupClient` (wraps `Aws\S3\S3Client`:
+  `headBucket`/`put`/`listObjects`/`getLifecycle`) + `S3BackupClientFactory`
+  (`forConfig(TeamS3Config)` builds the client from the DB row, secret
+  decrypted at build time). Tests bind a mocked factory via
+  `$this->instance()` — no network. `league/flysystem-aws-s3-v3` was
+  installed per the note but only the raw SDK is actually used (flysystem
+  has no lifecycle API).
+- **Permission split** (ticket said "item:write for all three" but the
+  acceptance wants "read-only token: reads allowed"): config management
+  (`POST`/`GET`/`DELETE api/team/s3`) = `item:write` — a read-only member
+  must not see whether credentials exist; the reads that matter
+  (`GET api/backups/bucket`, `GET api/team/s3/rules`) = `item:read`. The
+  show endpoint stays `item:write` deliberately.
+- **Probe before persist**: `store` builds an unsaved `TeamS3Config`
+  (`forceFill` applies the `encrypted` cast so the factory reads the secret
+  back exactly as it would be saved) and runs `HeadBucket` first; an
+  `AwsException` maps to 422 `{"bucket": ["<sdk message>"]}` and nothing is
+  written. Upsert via `firstOrNew` + `forceFill` (POST only — no PATCH on
+  this host).
+- **Rules endpoint**: `lifecycle` passes through `getLifecycle()` which
+  returns `null` for "no rules / store doesn't answer" (catches
+  `AwsException` inside the seam — pinned by a partial mock whose real
+  `getLifecycle` runs against a throwing SDK client). `s3_retention` is the
+  literal `"per bucket lifecycle"` when configured.
+- **`remote` flag** is row-level only: `backups.remote` (nullable bool) is
+  recorded by `BackupService` but deliberately NOT added to
+  `Backup::metadata()` — the API-018 payload contract stays additive-only.
+- **Rotation interaction pinned**: with S3, 8 creates → 7 local rows/files,
+  8 bucket keys (the bucket is never pruned locally).
+- **Test findings** (recurring traps, now with three data points):
+  - `withToken()` sets a *sticky* `Authorization` default header on the
+    test client — an "unauthenticated" request later in the same test still
+    sends the previous token (got 403, expected 401). Fix:
+    `$this->flushHeaders()` + `forgetGuards()`.
+  - Full `Mockery::mock(S3BackupClient::class)` bypasses the real methods —
+    to pin the newest-first listing sort, the test uses a partial mock
+    (`Mockery::mock(S3BackupClient::class, [$sdkMock, 'bucket'])->makePartial()`)
+    whose real `listObjects` runs against a canned paginator
+    (`new Result([...])` pages, `DateTimeImmutable` for `LastModified`).

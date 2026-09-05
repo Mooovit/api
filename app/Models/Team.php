@@ -53,5 +53,15 @@ class Team extends JetstreamTeam
     {
         return $this->hasOne(BackupSchedule::class);
     }
+
+    /**
+     * The S3 offload credentials (API-021) — at most one per team.
+     *
+     * @return HasOne
+     */
+    public function s3Config(): HasOne
+    {
+        return $this->hasOne(TeamS3Config::class);
+    }
 }
 

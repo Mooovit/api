@@ -2,15 +2,18 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\BackupCopyException;
 use App\Models\Backup;
 use App\Models\Team;
 use App\Services\BackupService;
+use App\Services\S3BackupClientFactory;
 use App\Support\TeamRevision;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Throwable;
 use ZipArchive;
 
 /**
@@ -21,7 +24,7 @@ use ZipArchive;
  * ("this backup belongs to that user"); retention keeps the last 7 backups
  * per team — older rows are deleted together with their stored files.
  * Creation goes through `BackupService` — shared with the auto-backup
- * scheduler (API-020).
+ * scheduler (API-020) and the S3 copy-off (API-021).
  *
  * Every client-facing shape flows through `Backup::metadata()` — filesystem
  * paths never leave the server; the download URL requires an authenticated
@@ -35,12 +38,19 @@ class BackupController extends Controller
     private $service;
 
     /**
+     * @var S3BackupClientFactory
+     */
+    private $s3;
+
+    /**
      * @param BackupService $service
+     * @param S3BackupClientFactory $s3
      * @return void
      */
-    public function __construct(BackupService $service)
+    public function __construct(BackupService $service, S3BackupClientFactory $s3)
     {
         $this->service = $service;
+        $this->s3 = $s3;
     }
 
     /**
@@ -91,7 +101,9 @@ class BackupController extends Controller
     /**
      * POST api/backups (API-018) — snapshot the effective team via
      * `BackupService::createForTeam` (dump → row → retention → revision
-     * bump, shared with the auto-backup scheduler).
+     * bump, shared with the auto-backup scheduler). When the team has S3
+     * configured (API-021), a failed bucket copy maps to 502 — upstream
+     * trouble, not a validation error — and nothing is recorded.
      *
      * @param Request $request
      * @return JsonResponse
@@ -101,9 +113,48 @@ class BackupController extends Controller
     {
         $team = $this->authorizeTeam($request, 'item:write');
 
-        $backup = $this->service->createForTeam($team, $request->user());
+        try {
+            $backup = $this->service->createForTeam($team, $request->user());
+        } catch (BackupCopyException $e) {
+            return response()->json(['error' => $e->getMessage()], 502);
+        }
 
         return response()->json($backup->metadata(), 201);
+    }
+
+    /**
+     * GET api/backups/bucket (API-021) — list the team's backup objects in
+     * its configured bucket (keys + size + last_modified, newest first).
+     * Without S3 → 422 (a clear "not configured" signal, not an auth error);
+     * upstream S3 problems surface as 502 with the driver message.
+     *
+     * @param Request $request
+     * @return JsonResponse
+     * @throws AuthorizationException
+     */
+    public function bucket(Request $request): JsonResponse
+    {
+        $team = $this->authorizeTeam($request, 'item:read');
+
+        $config = $team->s3Config()->first();
+        if (!$config) {
+            return response()->json(
+                ['s3' => ['No S3 bucket configured for this team.']],
+                422
+            );
+        }
+
+        try {
+            $objects = $this->s3->forConfig($config)->listObjects($config->prefix);
+        } catch (Throwable $e) {
+            return response()->json(['error' => $e->getMessage()], 502);
+        }
+
+        return response()->json([
+            'bucket' => $config->bucket,
+            'prefix' => $config->prefix,
+            'objects' => $objects,
+        ]);
     }
 
     /**

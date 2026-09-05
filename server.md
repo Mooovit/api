@@ -455,8 +455,27 @@ the fleet.
 > Month edges follow Carbon's default `addMonth()` **overflow** (Jan 31
 > monthly → Mar 3, not Feb 28) — pinned by tests.
 >
-> Follow-ups: S3 offload with the 7-backup cap applying only without a
-> bucket (API-021).
+> **S3 offload (2026-09, API-021)** — per-team S3 credentials in
+> `team_s3_configs` (uuid, unique `team_id`, `secret_key` encrypted at rest
+> via the `encrypted` cast and never serialized; `prefix` defaults to
+> `backups/{team_id}`). `POST/GET/DELETE api/team/s3` upsert-read-drop the
+> config (`item:write`); the POST probes the payload with a real HeadBucket
+> before persisting — dead credentials → 422 on `bucket` with the SDK
+> message, nothing stored. On create, `BackupService` copies the zip to the
+> bucket after the local put (one attempt; a failed copy → 502 with no row
+> and no local file; success records `backups.remote = true` — a row-level
+> flag, `metadata()` unchanged so the API-018 contract stays additive).
+> `GET api/backups/bucket` lists the team's bucket objects newest-first
+> (key/size/last_modified; `item:read`; 422 when unconfigured, 502 upstream).
+> `GET api/team/s3/rules` computes the applicable retention: `local_retention:
+> 7` always, `s3_configured`, `s3_retention: "per bucket lifecycle"|null`,
+> `lifecycle` from the bucket when the store answers (`null` when not —
+> not an error). Rotation stays local-only: local copies rotate at 7 with
+> or without S3; bucket copies are never pruned (the lifecycle is the
+> user's domain). The SDK never leaks: `S3BackupClientFactory::forConfig`
+> builds an `S3BackupClient` (headBucket/put/listObjects/getLifecycle) from
+> the DB row per call — the raw `Aws\S3\S3Client` is used (flysystem has no
+> lifecycle API).
 
 ---
 
