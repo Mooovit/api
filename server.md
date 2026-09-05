@@ -288,6 +288,27 @@ answer in one integer.
 
 ## 10. Device tokens for the PDA fleet
 
+> **Implemented (2026-09, API-012)** — `POST api/device-tokens` `{name}` mints a
+> Sanctum token named after the device with a restricted ability set (see table
+> below); the plain text token is returned exactly once, whole (no `id|token`
+> split like the legacy `api/authenticate`). `GET api/device-tokens` lists the
+> user's fleet metadata-only (`id, name, last_used_at, created_at` — Sanctum
+> stamps `last_used_at` on every use). `DELETE api/device-tokens/{id}` revokes;
+> a revoked token gets 401 on next use, the password keeps working. Any valid
+> token (device tokens included) may mint/revoke siblings — acceptable for a
+> single-warehouse team; revisit with API-017's enrollment codes.
+>
+> | ability | granted |
+> |---|---|
+> | item:read / item:write | ✓ |
+> | status:read / status:write | ✓ |
+> | location:read / location:write | ✓ |
+> | label:read / label:write | ✓ |
+> | account/settings abilities | ✗ |
+>
+> Client follow-up: the scanner-login QR should carry a one-time enrollment
+> code instead of the password (API-017 server-side).
+
 **Why** — login on PDAs uses the human's email/password (and the web's
 scanner-login QR is base64 `email:password` — plan.md §1). Every PDA stores
 the owner's real credentials; losing a device means a password rotate across

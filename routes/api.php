@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\ActivityController;
 use App\Http\Controllers\AuditController;
+use App\Http\Controllers\DeviceTokenController;
 use App\Http\Controllers\HistoryController;
 use App\Http\Controllers\ItemController;
 use App\Http\Controllers\LabelController;
@@ -89,5 +90,10 @@ Route::middleware('auth:sanctum')->group(function () {
     /* API-011: per-team barcode registry on items */
     Route::post('item/{item}/barcodes', [ItemBarcodeController::class, 'attach']);
     Route::delete('item/{item}/barcodes/{barcode}', [ItemBarcodeController::class, 'detach']);
+
+    /* API-012: named, revocable device tokens for the PDA fleet */
+    Route::post('device-tokens', [DeviceTokenController::class, 'store']);
+    Route::get('device-tokens', [DeviceTokenController::class, 'index']);
+    Route::delete('device-tokens/{id}', [DeviceTokenController::class, 'destroy']);
 
 });
