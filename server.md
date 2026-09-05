@@ -202,6 +202,18 @@ team/location" from the full items table, which is inference, not fact.
 
 ## 7. Audit/stocktake acceptance endpoint
 
+> **Implemented (2026-09, API-010)** — `POST api/location/:id/audits` stores the
+> exact MV-050 report (`{found_ids, extra, unknown_codes}`) plus `missing_count`
+> (declared client input); `found_count`/`extra_count` are computed server-side.
+> Referenced ids are validated for team membership only — snapshot semantics
+> (trashed rows accepted, current location not checked). `GET
+> api/location/:id/audits` lists a location's audits newest-first, paginated.
+> Audits appear in `GET api/activity` as one synthetic row per audit with the
+> same keys as history rows and `field_name: "audit"`, summary in `new_value`
+> ("3 found, 2 missing declared, 1 extra"), `location_id`/`location_name` —
+> filterable with `type=audit`, `location_id`, `since`. Each audit bumps the
+> team revision once (API-003). Client follow-up: the MV-050 "submit" button.
+
 **Why** — MV-050 produces a found/missing/extra report *locally*; the server
 never learns an audit happened. A stocktake that isn't recorded is an audit
 that can't be traced, compared, or repeated.
