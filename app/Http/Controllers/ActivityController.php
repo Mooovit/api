@@ -40,7 +40,8 @@ class ActivityController extends Controller
     public function index(Request $request): JsonResponse
     {
         $user = $request->user();
-        $team = $user->currentTeam;
+        /* API-015: the token's current team when set, the user's otherwise */
+        $team = $user->effectiveTeam();
 
         if (!$team instanceof Team ||
             !$user->hasTeamPermission($team, 'item:read') ||
@@ -69,8 +70,8 @@ class ActivityController extends Controller
         if ($includeHistory) {
             $historyQuery = History::query()
                 ->select('id', 'changed_at')
-                ->whereHas('item', function ($q) use ($user) {
-                    $q->where('team_id', $user->current_team_id);
+                ->whereHas('item', function ($q) use ($team) {
+                    $q->where('team_id', $team->id);
                 });
 
             if (isset($data['since'])) {
@@ -99,7 +100,7 @@ class ActivityController extends Controller
         if ($includeAudits && !isset($data['item_id'])) {
             $auditQuery = Audit::query()
                 ->select('id', 'created_at')
-                ->where('team_id', $user->current_team_id);
+                ->where('team_id', $team->id);
 
             if (isset($data['since'])) {
                 $auditQuery->where('created_at', '>', $request->date('since'));

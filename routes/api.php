@@ -4,6 +4,7 @@ use App\Http\Controllers\ActivityController;
 use App\Http\Controllers\AttachmentController;
 use App\Http\Controllers\AuditController;
 use App\Http\Controllers\DeviceTokenController;
+use App\Http\Controllers\DeviceTeamController;
 use App\Http\Controllers\HistoryController;
 use App\Http\Controllers\ItemController;
 use App\Http\Controllers\LabelController;
@@ -47,7 +48,8 @@ Route::middleware('auth:sanctum')->group(function () {
        X-Revision header on GET api/item) instead of pulling the full list */
     Route::get('/revision', function (Request $request) {
         $user = $request->user();
-        $team = $user->currentTeam;
+        /* API-015: the token's current team when set, the user's otherwise */
+        $team = $user->effectiveTeam();
 
         /* Mirrors the read endpoints: team membership + at least one read ability */
         $canRead = $team instanceof \App\Models\Team
@@ -96,6 +98,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('device-tokens', [DeviceTokenController::class, 'store']);
     Route::get('device-tokens', [DeviceTokenController::class, 'index']);
     Route::delete('device-tokens/{id}', [DeviceTokenController::class, 'destroy']);
+
+    /* API-015: per-device (per-token) current team — fetch + switch */
+    Route::get('device-team', [DeviceTeamController::class, 'show']);
+    Route::post('device-team', [DeviceTeamController::class, 'update']);
 
     /* API-013: image attachments on items */
     Route::post('item/{item}/attachments', [AttachmentController::class, 'store']);

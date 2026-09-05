@@ -400,8 +400,11 @@ class ItemController extends Controller
     public function index(Request $request): JsonResponse
     {
         $user = $request->user();
+        /* API-015: the token's current team when set, the user's otherwise */
+        $team = $user->effectiveTeam();
+
         /* We check that the user is allowed to read list of items */
-        if (!$user->hasTeamPermission($user->current_team, 'item:read') ||
+        if (!$user->hasTeamPermission($team, 'item:read') ||
             !$user->tokenCan('item:read')
         ) {
             throw new AuthorizationException();
@@ -415,20 +418,20 @@ class ItemController extends Controller
 
             return response()
                 ->json([
-                    'changed' => Item::where('team_id', $user->current_team_id)
+                    'changed' => Item::where('team_id', $team->id)
                         ->where('updated_at', '>', $since)
                         ->get(),
                     'deleted_ids' => Item::onlyTrashed()
-                        ->where('team_id', $user->current_team_id)
+                        ->where('team_id', $team->id)
                         ->where('deleted_at', '>', $since)
                         ->pluck('id'),
                 ])
-                ->header('X-Revision', (string) $user->currentTeam->revision);
+                ->header('X-Revision', (string) $team->revision);
         }
 
         return response()
-            ->json(Item::where('team_id', $user->current_team_id)->get())
-            ->header('X-Revision', (string) $user->currentTeam->revision);
+            ->json(Item::where('team_id', $team->id)->get())
+            ->header('X-Revision', (string) $team->revision);
     }
 
     /**

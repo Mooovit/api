@@ -11,6 +11,7 @@ use Laravel\Fortify\TwoFactorAuthenticatable;
 use Laravel\Jetstream\HasProfilePhoto;
 use Laravel\Jetstream\HasTeams;
 use Laravel\Sanctum\HasApiTokens;
+use Laravel\Sanctum\PersonalAccessToken;
 
 class User extends Authenticatable
 {
@@ -65,5 +66,31 @@ class User extends Authenticatable
      */
     protected function current_team() : BelongsTo{
         return $this->belongsTo(Team::class);
+    }
+
+    /**
+     * The team that API requests are scoped to for this user (API-015).
+     *
+     * A Sanctum token may carry a per-token current team
+     * (`personal_access_tokens.current_team_id`, set by `POST api/device-team`):
+     * it wins as long as the token's user is still a member of that team.
+     * Session-authenticated users (TransientToken, e.g. the kanban pages) and
+     * tokens without an override fall back to the user's own current team —
+     * the historical behavior.
+     *
+     * @return Team|null
+     */
+    public function effectiveTeam(): ?Team
+    {
+        $token = $this->currentAccessToken();
+
+        if ($token instanceof PersonalAccessToken && $token->current_team_id) {
+            $team = Team::find($token->current_team_id);
+            if ($team && $this->belongsToTeam($team)) {
+                return $team;
+            }
+        }
+
+        return $this->currentTeam;
     }
 }

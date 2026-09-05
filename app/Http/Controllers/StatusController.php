@@ -21,15 +21,17 @@ class StatusController extends Controller
     public function index(Request $request): Collection
     {
         $user = $request->user();
+        /* API-015: the token's current team when set, the user's otherwise */
+        $team = $user->effectiveTeam();
 
         /* We check that the user can create a box in the team */
-        if (!$user->hasTeamPermission($user->current_team, 'status:read') ||
+        if (!$user->hasTeamPermission($team, 'status:read') ||
             !$user->tokenCan('status:read')
         ) {
             throw new AuthorizationException();
         }
 
-        return Status::where('team_id', $user->current_team_id)->get();
+        return Status::where('team_id', $team->id)->get();
     }
 
     /**

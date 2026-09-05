@@ -17,7 +17,9 @@ class LabelController extends Controller
     public function index(Request $request): JsonResponse
     {
         $user = $request->user();
-        $labels = Label::where('team_id', $user->current_team_id)
+        /* API-015: the token's current team when set, the user's otherwise */
+        $team = $user->effectiveTeam();
+        $labels = Label::where('team_id', $team->id)
             ->orderBy('name')
             ->get();
 
@@ -35,8 +37,10 @@ class LabelController extends Controller
         ]);
 
         $user = $request->user();
+        /* API-015: the token's current team when set, the user's otherwise */
+        $team = $user->effectiveTeam();
 
-        if (!$user->hasTeamPermission($user->current_team, 'item:write') ||
+        if (!$user->hasTeamPermission($team, 'item:write') ||
             !$user->tokenCan('item:write')
         ) {
             throw new AuthorizationException();
@@ -45,7 +49,7 @@ class LabelController extends Controller
         $label = Label::create([
             'name' => $data['name'],
             'color' => $data['color'],
-            'team_id' => $user->current_team_id,
+            'team_id' => $team->id,
         ]);
 
         return response()->json($label, 201);
@@ -62,13 +66,15 @@ class LabelController extends Controller
         ]);
 
         $user = $request->user();
+        /* API-015: the token's current team when set, the user's otherwise */
+        $team = $user->effectiveTeam();
 
-        // Check if label belongs to user's team
-        if ($label->team_id !== $user->current_team_id) {
+        // Check if label belongs to the team served for this token
+        if ($label->team_id !== $team->id) {
             throw new AuthorizationException();
         }
 
-        if (!$user->hasTeamPermission($user->current_team, 'item:write') ||
+        if (!$user->hasTeamPermission($team, 'item:write') ||
             !$user->tokenCan('item:write')
         ) {
             throw new AuthorizationException();
@@ -84,13 +90,15 @@ class LabelController extends Controller
     public function destroy(Request $request, Label $label): JsonResponse
     {
         $user = $request->user();
+        /* API-015: the token's current team when set, the user's otherwise */
+        $team = $user->effectiveTeam();
 
-        // Check if label belongs to user's team
-        if ($label->team_id !== $user->current_team_id) {
+        // Check if label belongs to the team served for this token
+        if ($label->team_id !== $team->id) {
             throw new AuthorizationException();
         }
 
-        if (!$user->hasTeamPermission($user->current_team, 'item:write') ||
+        if (!$user->hasTeamPermission($team, 'item:write') ||
             !$user->tokenCan('item:write')
         ) {
             throw new AuthorizationException();
@@ -110,9 +118,11 @@ class LabelController extends Controller
         ]);
 
         $user = $request->user();
+        /* API-015: the token's current team when set, the user's otherwise */
+        $team = $user->effectiveTeam();
 
-        // Check if item belongs to user's team
-        if ($item->team_id !== $user->current_team_id) {
+        // Check if item belongs to the team served for this token
+        if ($item->team_id !== $team->id) {
             throw new AuthorizationException();
         }
 
@@ -122,10 +132,10 @@ class LabelController extends Controller
         }
 
         $label = Label::where('id', $data['label_id'])
-            ->where('team_id', $user->current_team_id)
+            ->where('team_id', $team->id)
             ->firstOrFail();
 
-        if (!$user->hasTeamPermission($user->current_team, 'item:write') ||
+        if (!$user->hasTeamPermission($team, 'item:write') ||
             !$user->tokenCan('item:write')
         ) {
             throw new AuthorizationException();
@@ -153,18 +163,20 @@ class LabelController extends Controller
     public function detachFromItem(Request $request, Item $item, Label $label): JsonResponse
     {
         $user = $request->user();
+        /* API-015: the token's current team when set, the user's otherwise */
+        $team = $user->effectiveTeam();
 
-        // Check if item belongs to user's team
-        if ($item->team_id !== $user->current_team_id) {
+        // Check if item belongs to the team served for this token
+        if ($item->team_id !== $team->id) {
             throw new AuthorizationException();
         }
 
-        // Check if label belongs to user's team
-        if ($label->team_id !== $user->current_team_id) {
+        // Check if label belongs to the team served for this token
+        if ($label->team_id !== $team->id) {
             throw new AuthorizationException();
         }
 
-        if (!$user->hasTeamPermission($user->current_team, 'item:write') ||
+        if (!$user->hasTeamPermission($team, 'item:write') ||
             !$user->tokenCan('item:write')
         ) {
             throw new AuthorizationException();
