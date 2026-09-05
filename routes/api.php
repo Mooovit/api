@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\ActivityController;
 use App\Http\Controllers\HistoryController;
 use App\Http\Controllers\ItemController;
 use App\Http\Controllers\LabelController;
@@ -62,6 +63,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('item/bulk-assign', [ItemController::class, 'bulkAssign']);
     Route::resource('item', ItemController::class);
     Route::get('item/{item}/history', [HistoryController::class, 'index']);
+    /* API-009: team-wide activity feed (filterable, paginated) */
+    Route::get('activity', [ActivityController::class, 'index']);
     /* API-004: intent verbs (anti-clobber) — POST only, the host does not
        support PATCH (load balancer). Each verb touches exactly its field(s). */
     Route::post('item/{item}/move', [ItemController::class, 'move']);

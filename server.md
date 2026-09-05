@@ -172,6 +172,17 @@ discovers the hard way.
 
 ## 6. Team-level activity feed
 
+> **Implemented (2026-09, API-009)** — `GET api/activity`: the same change rows as
+> item history, newest first (`changed_at` desc, id tiebreaker), paginated (default
+> 50, max 200). Filters: `since`, `item_id`, `type` (= `field_name`), and
+> `location_id` (= moves *into* that location:
+> `field_name='location_id' AND new_value=<id>`). Row shape:
+> `{id, item_id, item_name, user_id, user_name, field_name, old_value, new_value,
+> changed_at}` — `*_id` values stay raw UUIDs (client resolves names, same as item
+> history). Team-scoped through the owning item (trashed items' histories excluded,
+> consistent with the item-history 404). `histories.changed_at` now indexed. Pinned
+> by `tests/Feature/TeamActivityFeedTest.php`.
+
 **Why** — history exists only per item (`api/item/:id/history`). Everything
 the Android app added recently — timeline upgrade (MV-048), dashboards
 (MV-047), location audit (MV-050) — has to derive "what happened in this
