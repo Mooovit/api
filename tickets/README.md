@@ -62,9 +62,18 @@ tickets/
 | API-011  | §8 Barcode registry                                       | Barcode registry separate from item ids |
 | API-012  | §10 Device tokens                                         | Named, revocable device tokens for the PDA fleet |
 | API-013  | — (new idea: image attachments, Matthieu 2026-09)         | Image attachments on items (upload/list/download/delete) |
+| API-014  | — (user request: pin the pre-series surfaces)             | Feature tests for the original surfaces (kanban, register, teams) |
+| API-015  | — (user request: per-device team, Matthieu 2026-09)       | Per-device (per-token) current team |
+| API-016  | — (user request: cross-team move, Matthieu 2026-09)       | Cross-team item transfer |
+| API-017  | §10 follow-up (enrollment codes)                          | Device enrollment codes (scan to enroll a new PDA) |
+| API-018  | — (user request: savepoints, Matthieu 2026-09)            | Savepoint backups — CSV dumps of a team's data |
+| API-019  | — (user request: savepoints, Matthieu 2026-09)            | Backup comparison (added / removed / changed) |
+| API-020  | — (user request: savepoints, Matthieu 2026-09)            | Auto-backup schedules per team (daily/weekly/monthly/yearly) |
+| API-021  | — (user request: savepoints, Matthieu 2026-09)            | S3 offload for backups + bucket listing and rules display |
 
 Numbering follows the *Suggested order* in server.md (small wins first, then
-the sync work, then operational features); API-013 is appended by request.
+the sync work, then operational features); API-013..021 are appended by
+request (API-018..021 are the four slices of the savepoint/backups feature).
 
 ## 3. Ticket lifecycle
 
