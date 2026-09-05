@@ -497,7 +497,13 @@ class ItemController extends Controller
         
         /* Load labels + barcode registry relationships (API-011) */
         $item->load('labels', 'barcodes');
-        
+
+        /* API-013: attachments metadata only — replace the loaded rows (raw
+           rows carry the storage path, which must not be serialized) */
+        $item->load('attachments');
+        $item->setRelation('attachments',
+            $item->attachments->map(fn ($attachment) => $attachment->metadata())->values());
+
         return $item;
     }
 

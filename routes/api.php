@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\ActivityController;
+use App\Http\Controllers\AttachmentController;
 use App\Http\Controllers\AuditController;
 use App\Http\Controllers\DeviceTokenController;
 use App\Http\Controllers\HistoryController;
@@ -95,5 +96,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('device-tokens', [DeviceTokenController::class, 'store']);
     Route::get('device-tokens', [DeviceTokenController::class, 'index']);
     Route::delete('device-tokens/{id}', [DeviceTokenController::class, 'destroy']);
+
+    /* API-013: image attachments on items */
+    Route::post('item/{item}/attachments', [AttachmentController::class, 'store']);
+    Route::get('item/{item}/attachments', [AttachmentController::class, 'index']);
+    Route::get('attachment/{attachment}', [AttachmentController::class, 'show']);
+    Route::delete('attachment/{attachment}', [AttachmentController::class, 'destroy']);
 
 });

@@ -92,4 +92,13 @@ class Item extends Model
     {
         return $this->hasMany(ItemBarcode::class);
     }
+
+    /**
+     * Image attachments (API-013). Serialized only as `Attachment::metadata()`
+     * — the raw rows carry the storage path, which never leaves the server.
+     */
+    public function attachments(): HasMany
+    {
+        return $this->hasMany(Attachment::class);
+    }
 }

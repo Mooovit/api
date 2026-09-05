@@ -327,6 +327,28 @@ the fleet.
 
 ---
 
+## 11. Image attachments on items
+
+> **Implemented (2026-09, API-013)** — `attachments` table (uuid, item FK
+> cascade, team, uploader, `disk` default `local`, unique `path`,
+> `original_name`, `mime_type`, `size`, `caption?`). Multipart `POST
+> api/item/:id/attachments` (`file`: jpeg/png/webp/heic ≤ 10 MB, mime sniffed
+> from contents; optional `caption`) stores under
+> `attachments/{team_id}/{item_id}/{uuid}.{ext}` and returns the metadata (201).
+> `GET api/item/:id/attachments` lists metadata newest-first; `GET
+> api/attachment/:id` streams the binary (authenticated, stored mime); `DELETE
+> api/attachment/:id` removes file + row (`{"success": "success"}`). Every
+> payload shape flows through `Attachment::metadata()` — `{id, original_name,
+> mime_type, size, caption, user_id, url, created_at}` — **filesystem paths
+> never leave the server**; `url` requires a token, it is not a public link.
+> Item `show()` gains an additive `attachments` metadata array (old clients
+> ignore it); the list/delta payloads stay lean. Writes bump the team revision
+> (API-003) without touching the item row. Authorization: `item:write` on the
+> owning item's team for upload/delete, `item:read` for reads (device tokens
+> from API-012 qualify). Client follow-up: the Android capture/upload UI.
+
+---
+
 ## Suggested order
 
 1. **Idea 1** (`updated_at` on lists) — one field, unblocks three client
