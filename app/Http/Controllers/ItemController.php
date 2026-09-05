@@ -142,8 +142,9 @@ class ItemController extends Controller
     public function show(Request $request, Item $item): Item
     {
         $user = $request->user();
-        /* We check that the user is allowed to read list of items */
-        if (!$user->hasTeamPermission($user->current_team, 'item:read') ||
+        /* We check that the user is allowed to read this item, in ITS team
+           (not the user's current team, so cross-team ids are rejected) */
+        if (!$user->hasTeamPermission($item->team, 'item:read') ||
             !$user->tokenCan('item:read')
         ) {
             throw new AuthorizationException();
