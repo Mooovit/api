@@ -78,6 +78,16 @@ faster on warehouse Wi-Fi, and reduce battery.
 
 ## 3. Bulk operations endpoint
 
+> **Implemented (2026-09, API-007)** — `POST api/item/bulk-move`
+> `{ ids: [], parent_id|null }` and `POST api/item/bulk-assign`
+> `{ ids: [], status_id, location_id }` (1–500 ids). Response:
+> `{"results": [{id, ok, updated_at?|error?}, ...]}` in request order —
+> `not_found` / `foreign_team` / `cycle` per failing row, HTTP 200 even with
+> partial failures. One transaction, one history row per actually-changed
+> field, one revision bump per request per affected team. Batch rule: a
+> `parent_id` inside `ids` fails the whole batch as `cycle` (nothing
+> applied); trashed parent → 404. Pinned by `tests/Feature/ItemBulkTest.php`.
+
 **Why** — the Transport flow assigns status/location by PATCHing items one
 at a time; an MV-049 scan session queues one `MOVE` per scanned box. The
 sync engine replays them as N requests. A 50-item transport is 50 PATCHes

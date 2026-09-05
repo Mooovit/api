@@ -56,6 +56,10 @@ Route::middleware('auth:sanctum')->group(function () {
         return response()->json(['revision' => (int) $team->revision]);
     });
 
+    /* API-007: bulk operations — declared before the resource so the
+       item/bulk-* paths can never be swallowed by the {item} binding. */
+    Route::post('item/bulk-move', [ItemController::class, 'bulkMove']);
+    Route::post('item/bulk-assign', [ItemController::class, 'bulkAssign']);
     Route::resource('item', ItemController::class);
     Route::get('item/{item}/history', [HistoryController::class, 'index']);
     /* API-004: intent verbs (anti-clobber) — POST only, the host does not

@@ -77,6 +77,32 @@ class ItemController extends Controller
     }
 
     /**
+     * Whether moving $item under $newParentId would create a cycle (the
+     * destination is the item itself or one of its descendants). Row-level
+     * helper shared by the single move verb and bulk-move (API-007).
+     */
+    private function wouldCycle(Item $item, ?string $newParentId): bool
+    {
+        if ($newParentId === $item->id) {
+            return true;
+        }
+
+        /* Walk up the chain from the proposed parent; if we reach the item,
+           the proposed parent lives in its subtree (bounded loop). */
+        $seen = [];
+        $cursor = $newParentId ? Item::find($newParentId) : null;
+        while ($cursor && !isset($seen[$cursor->id])) {
+            if ($cursor->id === $item->id) {
+                return true;
+            }
+            $seen[$cursor->id] = true;
+            $cursor = $cursor->parent_id ? Item::find($cursor->parent_id) : null;
+        }
+
+        return false;
+    }
+
+    /**
      * Ensure the proposed parent is not the item itself nor one of its
      * descendants (moving would create a cycle).
      *
@@ -86,24 +112,10 @@ class ItemController extends Controller
      */
     private function ensureNoCycle(Item $item, ?string $newParentId): void
     {
-        if ($newParentId === $item->id) {
+        if ($this->wouldCycle($item, $newParentId)) {
             throw ValidationException::withMessages([
-                'parent_id' => 'An item cannot become its own parent.',
+                'parent_id' => 'Cannot move an item into one of its own descendants.',
             ]);
-        }
-
-        /* Walk up the chain from the proposed parent; if we reach the item,
-           the proposed parent lives in its subtree (bounded loop). */
-        $seen = [];
-        $cursor = $newParentId ? Item::find($newParentId) : null;
-        while ($cursor && !isset($seen[$cursor->id])) {
-            if ($cursor->id === $item->id) {
-                throw ValidationException::withMessages([
-                    'parent_id' => 'Cannot move an item into one of its own descendants.',
-                ]);
-            }
-            $seen[$cursor->id] = true;
-            $cursor = $cursor->parent_id ? Item::find($cursor->parent_id) : null;
         }
     }
 
@@ -202,6 +214,167 @@ class ItemController extends Controller
             $item->update($data);
             return $item->refresh();
         });
+    }
+
+    /**
+     * POST api/item/bulk-move (API-007) — move many items under one parent in
+     * a single request (`parent_id: null` detaches to root). POST only: the
+     * host does not support PATCH.
+     *
+     * Per-row results in request order: `{id, ok: true, updated_at}` on
+     * success, `{id, ok: false, error}` with `error` one of `not_found`,
+     * `foreign_team`, `cycle` otherwise — a bad row never aborts the batch
+     * (HTTP 200 even with partial failures). Rows are applied inside one
+     * transaction; history keeps per-item granularity (only actually-changed
+     * fields); the team revision (API-003) is bumped once per affected team —
+     * mass updates fire no model events, so no per-item bumps happen.
+     *
+     * @param Request $request
+     * @return JsonResponse
+     * @throws AuthorizationException|ValidationException
+     */
+    public function bulkMove(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        if (!$user->tokenCan('item:write')) {
+            throw new AuthorizationException();
+        }
+
+        $data = $request->validate([
+            'ids' => 'required|array|min:1|max:500',
+            'ids.*' => 'string|distinct',
+            'parent_id' => 'nullable|string|exists:items,id',
+        ]);
+
+        $ids = $data['ids'];
+        $parentId = Arr::get($data, 'parent_id');
+        /* Trashed parents 404 here too (global scope), matching the single
+           move verb. */
+        $parent = $parentId ? Item::findOrFail($parentId) : null;
+
+        /* The destination may not be part of the moved set — the batch would
+           be self-referential; every row reports `cycle`, nothing applies. */
+        $parentInBatch = $parent !== null && in_array($parent->id, $ids, true);
+
+        $appliedAt = now();
+        $results = [];
+        $touchedTeamIds = [];
+
+        DB::transaction(function () use ($user, $ids, $parent, $parentId, $parentInBatch, $appliedAt, &$results, &$touchedTeamIds) {
+            foreach ($ids as $id) {
+                $item = Item::find($id);
+
+                $error = null;
+                if (!$item) {
+                    $error = 'not_found';
+                } elseif (!$user->hasTeamPermission($item->team, 'item:write')) {
+                    $error = 'foreign_team';
+                } elseif ($parent && $item->team_id !== $parent->team_id) {
+                    $error = 'foreign_team';
+                } elseif ($parentInBatch || $this->wouldCycle($item, $parentId)) {
+                    $error = 'cycle';
+                }
+
+                if ($error !== null) {
+                    $results[] = ['id' => $id, 'ok' => false, 'error' => $error];
+                    continue;
+                }
+
+                $this->recordItemChanges($item, ['parent_id' => $parentId], $user, true);
+                /* Mass update: fires no model events (no per-item bump). */
+                Item::whereKey($item->id)->update([
+                    'parent_id' => $parentId,
+                    'updated_at' => $appliedAt,
+                ]);
+                $touchedTeamIds[$item->team_id] = true;
+                $results[] = ['id' => $id, 'ok' => true, 'updated_at' => $appliedAt];
+            }
+
+            if ($touchedTeamIds) {
+                /* API-003 bump, once per request per affected team. */
+                Team::whereIn('id', array_keys($touchedTeamIds))->increment('revision');
+            }
+        });
+
+        return response()->json(['results' => $results]);
+    }
+
+    /**
+     * POST api/item/bulk-assign (API-007) — set status + location (the
+     * Transport payload) on many items in a single request. Same per-row
+     * result contract as bulk-move (`not_found`, `foreign_team`).
+     *
+     * @param Request $request
+     * @return JsonResponse
+     * @throws AuthorizationException|ValidationException
+     */
+    public function bulkAssign(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        if (!$user->tokenCan('item:write')) {
+            throw new AuthorizationException();
+        }
+
+        $data = $request->validate([
+            'ids' => 'required|array|min:1|max:500',
+            'ids.*' => 'string|distinct',
+            'status_id' => 'required|string|exists:statuses,id',
+            'location_id' => 'required|string|exists:locations,id',
+        ]);
+
+        $status = Status::findOrFail($data['status_id']);
+        $location = Location::findOrFail($data['location_id']);
+        if ($status->team_id !== $location->team_id) {
+            throw ValidationException::withMessages([
+                'location_id' => 'Status and location must belong to the same team.',
+            ]);
+        }
+
+        $appliedAt = now();
+        $results = [];
+        $touchedTeamIds = [];
+
+        DB::transaction(function () use ($user, $data, $status, $location, $appliedAt, &$results, &$touchedTeamIds) {
+            foreach ($data['ids'] as $id) {
+                $item = Item::find($id);
+
+                $error = null;
+                if (!$item) {
+                    $error = 'not_found';
+                } elseif (!$user->hasTeamPermission($item->team, 'item:write')) {
+                    $error = 'foreign_team';
+                } elseif ($item->team_id !== $status->team_id) {
+                    $error = 'foreign_team';
+                }
+
+                if ($error !== null) {
+                    $results[] = ['id' => $id, 'ok' => false, 'error' => $error];
+                    continue;
+                }
+
+                $this->recordItemChanges(
+                    $item,
+                    ['status_id' => $status->id, 'location_id' => $location->id],
+                    $user,
+                    true
+                );
+                /* Mass update: fires no model events (no per-item bump). */
+                Item::whereKey($item->id)->update([
+                    'status_id' => $status->id,
+                    'location_id' => $location->id,
+                    'updated_at' => $appliedAt,
+                ]);
+                $touchedTeamIds[$item->team_id] = true;
+                $results[] = ['id' => $id, 'ok' => true, 'updated_at' => $appliedAt];
+            }
+
+            if ($touchedTeamIds) {
+                /* API-003 bump, once per request per affected team. */
+                Team::whereIn('id', array_keys($touchedTeamIds))->increment('revision');
+            }
+        });
+
+        return response()->json(['results' => $results]);
     }
 
     /**
