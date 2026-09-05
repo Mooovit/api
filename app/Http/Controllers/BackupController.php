@@ -251,4 +251,153 @@ class BackupController extends Controller
 
         return response()->json(['success' => 'success']);
     }
+
+    /**
+     * GET api/backup/{backup}/compare/{other} (API-019) — diff two
+     * savepoints of the same team: `{backup}` is the base, `{other}` the
+     * target ("what happened going from base to target"). Per entity type:
+     * `added`/`removed` full rows (identity = row id), `changed` only rows
+     * with at least one field difference as `{field: {from, to}}`, plus
+     * `counts` `{added, removed, unchanged, changed}`. Compared against the
+     * snapshots, not the live tables. Fields compare as trimmed strings;
+     * null and empty string are equal (CSV round-trip artifact). Note: the
+     * dumps include soft-deleted tombstones, so a soft-delete shows as
+     * `changed` on `deleted_at` — only rows that truly left the table are
+     * `removed`.
+     *
+     * @param Request $request
+     * @param Backup $backup base
+     * @param Backup $other target
+     * @return JsonResponse
+     * @throws AuthorizationException
+     */
+    public function compare(Request $request, Backup $backup, Backup $other): JsonResponse
+    {
+        $user = $request->user();
+        if ($backup->team_id !== $other->team_id
+            || !$user->hasTeamPermission($backup->team, 'item:read')
+            || !$user->tokenCan('item:read')
+        ) {
+            throw new AuthorizationException();
+        }
+
+        return response()->json([
+            'generated_at' => now(),
+            'items' => $this->compareType($backup, $other, 'items'),
+            'locations' => $this->compareType($backup, $other, 'locations'),
+            'statuses' => $this->compareType($backup, $other, 'statuses'),
+            'labels' => $this->compareType($backup, $other, 'labels'),
+        ]);
+    }
+
+    /**
+     * Read one entity CSV out of a backup zip as an `id => row` map (assoc
+     * arrays, string values as the CSV carries them). An empty or missing
+     * file (empty team) yields an empty map.
+     *
+     * @param Backup $backup
+     * @param string $type
+     * @return array<string, array<string, string>>
+     */
+    private function readRows(Backup $backup, string $type): array
+    {
+        $bytes = Storage::disk($backup->disk)->get($backup->path);
+
+        $tmp = tempnam(sys_get_temp_dir(), 'compare');
+        file_put_contents($tmp, $bytes);
+        $zip = new ZipArchive();
+        $zip->open($tmp);
+        $csv = $zip->getFromName("{$type}.csv");
+        $zip->close();
+        unlink($tmp);
+
+        if ($csv === false || trim($csv) === '') {
+            return [];
+        }
+
+        $lines = explode("\n", trim($csv));
+        $header = str_getcsv(array_shift($lines), ',', '"', '\\');
+
+        $rows = [];
+        foreach ($lines as $line) {
+            if (trim($line) === '') {
+                continue;
+            }
+            $row = array_combine($header, str_getcsv($line, ',', '"', '\\'));
+            $rows[$row['id']] = $row;
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Diff one entity type between base and target (see compare()).
+     *
+     * @param Backup $base
+     * @param Backup $target
+     * @param string $type
+     * @return array
+     */
+    private function compareType(Backup $base, Backup $target, string $type): array
+    {
+        $baseRows = $this->readRows($base, $type);
+        $targetRows = $this->readRows($target, $type);
+
+        $added = [];
+        foreach ($targetRows as $id => $row) {
+            if (!isset($baseRows[$id])) {
+                $added[] = $row;
+            }
+        }
+
+        $removed = [];
+        foreach ($baseRows as $id => $row) {
+            if (!isset($targetRows[$id])) {
+                $removed[] = $row;
+            }
+        }
+
+        $changed = [];
+        $unchanged = 0;
+        foreach ($targetRows as $id => $targetRow) {
+            if (!isset($baseRows[$id])) {
+                continue;
+            }
+            $diff = [];
+            foreach ($targetRow as $field => $to) {
+                $from = $baseRows[$id][$field] ?? '';
+                if ($this->normalize($from) !== $this->normalize($to)) {
+                    $diff[$field] = ['from' => $from, 'to' => $to];
+                }
+            }
+            if ($diff !== []) {
+                $changed[] = ['id' => $id, 'diff' => $diff];
+            } else {
+                $unchanged++;
+            }
+        }
+
+        return [
+            'added' => $added,
+            'removed' => $removed,
+            'changed' => $changed,
+            'counts' => [
+                'added' => count($added),
+                'removed' => count($removed),
+                'changed' => count($changed),
+                'unchanged' => $unchanged,
+            ],
+        ];
+    }
+
+    /**
+     * Comparison normalization: trimmed strings, null ≡ empty string.
+     *
+     * @param string|null $value
+     * @return string
+     */
+    private function normalize(?string $value): string
+    {
+        return trim((string) $value);
+    }
 }

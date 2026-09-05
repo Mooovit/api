@@ -124,5 +124,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('backups', [BackupController::class, 'store']);
     Route::get('backup/{backup}', [BackupController::class, 'show']);
     Route::delete('backup/{backup}', [BackupController::class, 'destroy']);
+    /* API-019: diff two savepoints (base → target) */
+    Route::get('backup/{backup}/compare/{other}', [BackupController::class, 'compare']);
 
 });

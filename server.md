@@ -422,9 +422,21 @@ the fleet.
 > kept — older rows deleted with their files (a manual DELETE frees a
 > slot). Create and delete bump the team revision once each (API-003).
 >
-> Follow-ups: comparing two backups (API-019); scheduled auto-backups
-> (API-020); S3 offload with the 7-backup cap applying only without a
-> bucket (API-021).
+> **Comparison (2026-09, API-019)** — `GET api/backup/:id/compare/:other`
+> diffs two savepoints of the same team (`item:read`; cross-team pair or
+> stranger → 403; unknown id → 404): `:id` is the base, `:other` the target.
+> Flat response: `{"generated_at", "items", "locations", "statuses",
+> "labels"}` where each type carries `added`/`removed` (full parsed CSV
+> rows, identity = row id), `changed` (only rows with ≥1 field difference,
+> as `{id, diff: {field: {from, to}}}`) and `counts` `{added, removed,
+> unchanged, changed}`. Fields compare as trimmed strings, null ≡ empty.
+> Note: dumps include soft-deleted tombstones, so a soft-delete between
+> backups surfaces as `changed` on `deleted_at` — only rows that truly
+> left the table are `removed`. The inverse direction reports the inverse
+> sets.
+>
+> Follow-ups: scheduled auto-backups (API-020); S3 offload with the
+> 7-backup cap applying only without a bucket (API-021).
 
 ---
 
