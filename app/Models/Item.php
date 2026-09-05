@@ -8,11 +8,21 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
+/**
+ * Tombstone contract (API-005): deleting an item soft-deletes it. Trashed
+ * rows disappear from every default query (global scope), so the API and
+ * kanban behave exactly as with hard deletes; the row survives with
+ * `deleted_at` set so delta sync (API-006) can report deleted ids. Children
+ * keep their `parent_id` pointing at the trashed parent (interim policy —
+ * API-008 decides the final semantics).
+ */
 class Item extends Model
 {
     use HasFactory;
     use Uuids;
+    use SoftDeletes;
 
     public $fillable = ['name', 'team_id', 'location_id', 'status_id', 'parent_id'];
 

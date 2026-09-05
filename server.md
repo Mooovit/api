@@ -42,6 +42,12 @@ web SPA ignores extra fields.
 
 ## 2. Delta sync: `?since=` + deletions feed
 
+> **Prerequisite done (2026-09, API-005)** — items are now **soft-deleted**
+> (`items.deleted_at` + index, `SoftDeletes` on the model). Deletions survive as
+> tombstone rows while every existing query/route behaves as before. Pinned by
+> `tests/Feature/ItemSoftDeleteTest.php`. Interim policy: children of a deleted box keep
+> their `parent_id` (API-008 decides the final semantics).
+
 **Why** — every client refresh downloads the *entire* items table. With a
 handful of PDAs syncing on MV-014's background schedule (plus the web SPA),
 each poll is a full payload and a full Room clobber. Deltas make sync cheap,

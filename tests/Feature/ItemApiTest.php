@@ -286,7 +286,9 @@ class ItemApiTest extends TestCase
             ->assertOk()
             ->assertJsonPath('success', 'success');
 
-        $this->assertDatabaseMissing('items', ['id' => $item->id]);
+        /* API-005: deletion is a soft delete — invisible to every client
+           surface, but the tombstone row survives for delta sync (API-006). */
+        $this->assertNotNull(Item::withTrashed()->find($item->id)->deleted_at);
     }
 
     public function test_destroy_requires_item_write_ability(): void
