@@ -5,6 +5,7 @@ use App\Http\Controllers\AttachmentController;
 use App\Http\Controllers\AuditController;
 use App\Http\Controllers\DeviceTokenController;
 use App\Http\Controllers\DeviceTeamController;
+use App\Http\Controllers\EnrollmentCodeController;
 use App\Http\Controllers\HistoryController;
 use App\Http\Controllers\ItemController;
 use App\Http\Controllers\LabelController;
@@ -29,6 +30,9 @@ use Illuminate\Support\Facades\Route;
 
 Route::post('/register', [UserController::class, 'register']);
 Route::post('/authenticate', [UserController::class, 'authenticate']);
+/* API-017: scan-to-enroll — exchange a one-time code for a device token
+   (unauthenticated by design: the code IS the proof) */
+Route::post('/enroll', [EnrollmentCodeController::class, 'enroll']);
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/user', function (Request $request) {
         $permissions = collect();
@@ -100,6 +104,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('device-tokens', [DeviceTokenController::class, 'store']);
     Route::get('device-tokens', [DeviceTokenController::class, 'index']);
     Route::delete('device-tokens/{id}', [DeviceTokenController::class, 'destroy']);
+
+    /* API-017: one-time, short-lived enrollment codes for new PDAs */
+    Route::post('enrollment-codes', [EnrollmentCodeController::class, 'store']);
 
     /* API-015: per-device (per-token) current team — fetch + switch */
     Route::get('device-team', [DeviceTeamController::class, 'show']);

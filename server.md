@@ -306,8 +306,21 @@ answer in one integer.
 > | label:read / label:write | ✓ |
 > | account/settings abilities | ✗ |
 >
-> Client follow-up: the scanner-login QR should carry a one-time enrollment
-> code instead of the password (API-017 server-side).
+> **Enrollment codes (2026-09, API-017)** — the password-free enrollment path:
+> `POST api/enrollment-codes` (authenticated, any valid token) mints a one-time
+> code for the calling user — 8 chars from an unambiguous alphabet (no
+> 0/O/1/I/L, hand-typeable when scanning fails), lives 15 minutes, single-use
+> (`used_at` + `used_by_token_id` claimed by a guarded conditional update, so
+> concurrent redeemers cannot both win); the issuer's stale (used or expired)
+> codes are pruned at mint time — no scheduler. `POST api/enroll`
+> (**unauthenticated**, next to register/authenticate — the code IS the proof)
+> `{code, name}` exchanges it for a device token belonging to the code's
+> issuer with exactly the ability table above → `{id, name, token}` 201 (same
+> shape as `POST api/device-tokens`). Errors: unknown or expired code → 422
+> with a `code` error; already-used code → 410 Gone.
+>
+> Client follow-up: the scanner-login QR carries the enrollment code instead
+> of the base64 `email:password`.
 
 **Why** — login on PDAs uses the human's email/password (and the web's
 scanner-login QR is base64 `email:password` — plan.md §1). Every PDA stores
