@@ -58,6 +58,11 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::resource('item', ItemController::class);
     Route::get('item/{item}/history', [HistoryController::class, 'index']);
+    /* API-004: intent verbs (anti-clobber) — POST only, the host does not
+       support PATCH (load balancer). Each verb touches exactly its field(s). */
+    Route::post('item/{item}/move', [ItemController::class, 'move']);
+    Route::post('item/{item}/assign', [ItemController::class, 'assign']);
+    Route::post('item/{item}/rename', [ItemController::class, 'rename']);
     Route::resource('status', StatusController::class);
     Route::resource('location', LocationController::class);
     

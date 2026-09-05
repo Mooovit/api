@@ -83,6 +83,16 @@ turns that into 50 chances to fail.
 
 ## 4. Sparse PATCH / intent-based verbs (anti-clobber)
 
+> **Implemented (2026-09, API-004)** — intent verbs shipped as **POST** (the host does
+> not support PATCH): `POST api/item/{item}/move {parent_id|null}`, `POST
+> api/item/{item}/assign {status_id, location_id}`, `POST api/item/{item}/rename
+> {name}`. Each runs in a transaction, touches exactly its field(s) and records exactly
+> its history rows; `move` rejects cycles (422) and cross-team parents (404). Pinned by
+> `tests/Feature/ItemIntentVerbsTest.php`. Note: the legacy `PATCH api/item/:id` is
+> *already sparse* (only sent fields applied, history only for real changes) — pinned by
+> `ItemApiTest` — so both paths are safe against sibling clobbering. `If-Match`
+> preconditions remain future work.
+
 **Why** — `PATCH api/item/:id` semantics are "the full item object with the
 modified field(s)". Two clients editing the same item concurrently
 last-write-wins the *whole object*: a rename from the web can silently undo

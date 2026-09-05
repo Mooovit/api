@@ -11,6 +11,8 @@ use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class ItemController extends Controller
 {
@@ -45,16 +47,20 @@ class ItemController extends Controller
      * @param Item $item
      * @param array $data
      * @param $user
+     * @param bool $onlyPresentKeys when true, a key present with a null value
+     *        (e.g. `parent_id: null` from the move verb) is still tracked;
+     *        the legacy update() behavior (isset semantics) is unchanged.
      */
-    private function recordItemChanges(Item $item, array $data, $user)
+    private function recordItemChanges(Item $item, array $data, $user, bool $onlyPresentKeys = false)
     {
         $trackableFields = ['name', 'location_id', 'status_id', 'parent_id'];
-        
+
         foreach ($trackableFields as $field) {
-            if (isset($data[$field])) {
+            $present = $onlyPresentKeys ? array_key_exists($field, $data) : isset($data[$field]);
+            if ($present) {
                 $oldValue = $item->$field;
                 $newValue = $data[$field];
-                
+
                 // Only record if the value actually changed
                 if ($oldValue !== $newValue) {
                     History::create([
@@ -68,6 +74,134 @@ class ItemController extends Controller
                 }
             }
         }
+    }
+
+    /**
+     * Ensure the proposed parent is not the item itself nor one of its
+     * descendants (moving would create a cycle).
+     *
+     * @param Item $item
+     * @param string|null $newParentId
+     * @throws ValidationException
+     */
+    private function ensureNoCycle(Item $item, ?string $newParentId): void
+    {
+        if ($newParentId === $item->id) {
+            throw ValidationException::withMessages([
+                'parent_id' => 'An item cannot become its own parent.',
+            ]);
+        }
+
+        /* Walk up the chain from the proposed parent; if we reach the item,
+           the proposed parent lives in its subtree (bounded loop). */
+        $seen = [];
+        $cursor = $newParentId ? Item::find($newParentId) : null;
+        while ($cursor && !isset($seen[$cursor->id])) {
+            if ($cursor->id === $item->id) {
+                throw ValidationException::withMessages([
+                    'parent_id' => 'Cannot move an item into one of its own descendants.',
+                ]);
+            }
+            $seen[$cursor->id] = true;
+            $cursor = $cursor->parent_id ? Item::find($cursor->parent_id) : null;
+        }
+    }
+
+    /**
+     * Authorization shared by the intent verbs (move/assign/rename): the
+     * item's own team + item:write token ability (api/* only, like update()).
+     *
+     * @param Request $request
+     * @param Item $item
+     * @throws AuthorizationException
+     */
+    private function authorizeIntentVerb(Request $request, Item $item): void
+    {
+        $user = $request->user();
+        if (!$user->hasTeamPermission($item->team, 'item:write') ||
+            !$user->tokenCan('item:write')
+        ) {
+            throw new AuthorizationException();
+        }
+    }
+
+    /**
+     * POST api/item/{item}/move — move the box under another parent
+     * (`parent_id: null` makes it a root). Touches only parent_id.
+     *
+     * @param Request $request
+     * @param Item $item
+     * @return Item
+     * @throws AuthorizationException|ValidationException
+     */
+    public function move(Request $request, Item $item): Item
+    {
+        $this->authorizeIntentVerb($request, $item);
+
+        $data = $request->validate([
+            'parent_id' => 'nullable|string|exists:items,id',
+        ]);
+
+        $this->checkParents($item->team_id, $data);
+        $this->ensureNoCycle($item, Arr::get($data, 'parent_id'));
+
+        return DB::transaction(function () use ($item, $data, $request) {
+            $this->recordItemChanges($item, $data, $request->user(), true);
+            $item->update($data);
+            return $item->refresh();
+        });
+    }
+
+    /**
+     * POST api/item/{item}/assign — set status and location (the Transport
+     * payload). Touches only status_id and location_id.
+     *
+     * @param Request $request
+     * @param Item $item
+     * @return Item
+     * @throws AuthorizationException|ValidationException
+     */
+    public function assign(Request $request, Item $item): Item
+    {
+        $this->authorizeIntentVerb($request, $item);
+
+        $data = $request->validate([
+            'status_id' => 'required|string|exists:statuses,id',
+            'location_id' => 'required|string|exists:locations,id',
+        ]);
+
+        $this->checkParents($item->team_id, $data);
+
+        return DB::transaction(function () use ($item, $data, $request) {
+            $this->recordItemChanges($item, $data, $request->user(), true);
+            $item->update($data);
+            return $item->refresh();
+        });
+    }
+
+    /**
+     * POST api/item/{item}/rename — change the item name. Touches only name;
+     * renaming to the same name saves nothing (no history row, updated_at
+     * unchanged).
+     *
+     * @param Request $request
+     * @param Item $item
+     * @return Item
+     * @throws AuthorizationException|ValidationException
+     */
+    public function rename(Request $request, Item $item): Item
+    {
+        $this->authorizeIntentVerb($request, $item);
+
+        $data = $request->validate([
+            'name' => 'required|string',
+        ]);
+
+        return DB::transaction(function () use ($item, $data, $request) {
+            $this->recordItemChanges($item, $data, $request->user(), true);
+            $item->update($data);
+            return $item->refresh();
+        });
     }
 
     /**
