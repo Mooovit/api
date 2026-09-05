@@ -495,8 +495,8 @@ class ItemController extends Controller
             $item->childrens;
         }
         
-        /* Load labels relationship */
-        $item->load('labels');
+        /* Load labels + barcode registry relationships (API-011) */
+        $item->load('labels', 'barcodes');
         
         return $item;
     }

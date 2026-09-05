@@ -6,6 +6,7 @@ use App\Http\Controllers\HistoryController;
 use App\Http\Controllers\ItemController;
 use App\Http\Controllers\LabelController;
 use App\Http\Controllers\LocationController;
+use App\Http\Controllers\ItemBarcodeController;
 use App\Http\Controllers\StatusController;
 use App\Http\Controllers\UserController;
 use Illuminate\Http\Request;
@@ -84,5 +85,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('labels/{label}', [LabelController::class, 'destroy']);
     Route::post('item/{item}/labels', [LabelController::class, 'attachToItem']);
     Route::delete('item/{item}/labels/{label}', [LabelController::class, 'detachFromItem']);
+
+    /* API-011: per-team barcode registry on items */
+    Route::post('item/{item}/barcodes', [ItemBarcodeController::class, 'attach']);
+    Route::delete('item/{item}/barcodes/{barcode}', [ItemBarcodeController::class, 'detach']);
 
 });

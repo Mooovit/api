@@ -233,6 +233,19 @@ that can't be traced, compared, or repeated.
 
 ## 8. Barcode registry separate from item ids
 
+> **Implemented (2026-09, API-011)** — `item_barcodes` table (`item_id`, `code`,
+> `type?`, unique `(team_id, code)` enforced at the DB level). `POST
+> api/item/:id/barcodes` `{code, type?}` attaches (409 on duplicate within the
+> team — including codes held by soft-deleted items: a trashed item's codes
+> stay reserved until hard delete); `DELETE api/item/:id/barcodes/{barcode}`
+> detaches by row id, by code in the path, or `?code=`. Codes are stored
+> verbatim (trimmed, case-sensitive). Item `show()` payloads carry a
+> `barcodes` array; index/delta payloads stay lean (documented — clients
+> re-pull an item to see its codes). Registry writes bump the team revision
+> but not the item's `updated_at`. **The client-side resolution contract
+> stands**: `ScanCodeResolver` gains the barcode index; item ids remain the
+> primary scan target (MV-027 unchanged).
+
 **Why** — scans resolve by *raw item id* today (MV-027), which works only
 because the team's stickers embed the ids. Real EAN-128/Code128 carrier
 labels can't be adopted, and there is no uniqueness validation if a sticker

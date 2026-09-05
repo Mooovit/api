@@ -82,4 +82,14 @@ class Item extends Model
         return $this->belongsToMany(Label::class, 'item_label')
                     ->withTimestamps();
     }
+
+    /**
+     * Barcode registry entries bound to this item (API-011). Payloads:
+     * `show()` lists them; registry writes don't touch this row's
+     * `updated_at` (pivot-like, like labels).
+     */
+    public function barcodes(): HasMany
+    {
+        return $this->hasMany(ItemBarcode::class);
+    }
 }

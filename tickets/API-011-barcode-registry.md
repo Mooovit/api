@@ -3,7 +3,7 @@ id: API-011
 title: "Barcode registry separate from item ids"
 type: feature
 priority: P2
-status: ready
+status: in-review
 depends_on: [API-001]
 spec: "server.md §8; client context: MV-027/MV-012"
 ---
@@ -19,20 +19,18 @@ Resolution stays client-side (`ScanCodeResolver` gains a barcode index — serve
 the server only stores, validates uniqueness, and ships the codes on item payloads.
 
 ## Scope — Must have
-- [ ] Migration: `item_barcodes` table — uuid PK, `item_id` (FK cascade), `team_id`
-      (indexed), `code` (string, indexed), `type` (nullable string, e.g. `code128`,
-      `ean128`, `qr`), `timestamps`; **unique constraint on (`team_id`, `code`)** —
-      uniqueness is scoped to the team, validated server-side.
-- [ ] Additive payload field: item resources include `barcodes: ["<code>", ...]` —
-      eager-loaded in `show()` (and `index()` — decide by payload-size measurement;
-      if index stays lean, list-only is acceptable and documented). Old clients ignore
-      unknown fields (additive rule).
-- [ ] `POST api/item/{item}/barcodes` — body `{code, type?}` → attaches; 409 on
+- [x] Migration: `item_barcodes` table — uuid PK, `item_id` (FK cascade), `team_id`
+      (indexed), `code` (string 191, indexed), `type` (nullable string 191, e.g.
+      `code128`, `ean128`, `qr`), `timestamps`; **unique constraint on (`team_id`,
+      `code`)** — uniqueness is scoped to the team, validated server-side.
+- [x] Additive payload field: item resources include `barcodes: [...]` — loaded in
+      `show()`; index/delta stay lean (decision documented, see Report).
+- [x] `POST api/item/{item}/barcodes` — body `{code, type?}` → attaches; 409 on
       duplicate code within the team (mirrors the label-attach style of
       `LabelController::attachToItem`); `item:write` + resource-team authorization.
-- [ ] `DELETE api/item/{item}/barcodes/{barcode}` — detaches (id by barcode row id;
-      also accept `?code=` lookup for convenience).
-- [ ] Feature tests.
+- [x] `DELETE api/item/{item}/barcodes/{barcode}` — detaches (id by barcode row id;
+      also accepts a code in the path, or `?code=` which wins when present).
+- [x] Feature tests.
 
 ## Out of scope
 - `GET api/item?barcode=<code>` server-side resolution (optional later per server.md §8
@@ -41,28 +39,55 @@ the server only stores, validates uniqueness, and ships the codes on item payloa
   remain the primary scan target, MV-027 unchanged).
 
 ## Acceptance criteria
-- [ ] Same code twice in one team → 409; same code in two teams → both fine.
-- [ ] Item payloads list attached codes; clients that never call the new routes see no
-      behavioral change.
-- [ ] Foreign-team item → 403/404 on attach/detach; read-only token → 403.
-- [ ] Deleting (soft-deleting, API-005) an item hides its barcodes from payloads; codes
-      free for reuse is acceptable and documented (rows cascade on hard delete only).
+- [x] Same code twice in one team → 409; same code in two teams → both fine.
+- [x] Item payloads list attached codes; clients that never call the new routes see no
+      behavioral change (additive: `show()` only — index unchanged, pinned by test).
+- [x] Foreign-team item → 403 on attach/detach; read-only token → 403.
+- [x] Deleting (soft-deleting, API-005) an item hides its barcodes from payloads (show
+      404s); codes stay reserved while the item is trashed — documented (rows cascade
+      on hard delete only).
 
 ## Technical notes
-- Keep `barcodes` off the delta-sync `changed` comparison problem: writes bump the team
-  revision (API-003 helper) and touch item `updated_at`? — decision: attach/detach does
-  **not** modify the item row's `updated_at` (it's pivot data like labels today);
-  document that clients must re-pull an item to see new barcodes (or include the
-  relation when they request show).
-- Code normalization: store verbatim (case-sensitive, trimmed) — no uppercasing;
-  document it.
-- Max length guard: `code` string 191; validate `string|max:191`.
+- Keep `barcodes` off the delta-sync `changed` comparison problem: attach/detach bumps
+  the team revision (API-003 helper) but does **not** modify the item row's
+  `updated_at` (pivot data like labels today); clients re-pull an item (show) to see
+  new barcodes.
+- Code normalization: store verbatim (case-sensitive, trimmed) — no uppercasing.
+- Max length guard: `code`/`type` string 191; validate `string|max:191`.
 
-## Tests
-`vendor/bin/phpunit --filter ItemBarcodeTest`:
-- attach/list/detach happy path; duplicate 409; cross-team duplicate allowed;
-- payload contains `barcodes`; permission matrix; soft-deleted item hides codes.
-
-## Documentation requirements
-- PHPDoc on model + controller; `server.md` §8 mark implemented (note the client-side
-  resolution contract stands); plan.md §2 contract notes (`barcodes` field is additive).
+## Report (implementation)
+- **Storage**: `2026_09_05_000006_create_item_barcodes_table` (uuid PK, `item_id` FK
+  cascade, `team_id` indexed, `code`/`type` string(191), `unique(team_id, code)` at
+  the DB level); `App\Models\ItemBarcode` (`Uuids`, `item()`/`team()`);
+  `Item::barcodes()` hasMany; `App\Http\Controllers\ItemBarcodeController`
+  (`attach`/`detach`); routes `POST item/{item}/barcodes` +
+  `DELETE item/{item}/barcodes/{barcode}` in the `auth:sanctum` group.
+- **attach**: `item:write` on the item's own team + token ability → 403; validation
+  `code required|string|max:191`, `type nullable|string|max:191`; code stored
+  whitespace-trimmed, case-sensitive; duplicate within the team (checked against the
+  raw table — soft-deleted items' rows included, so trashed items keep their codes
+  reserved) → **409** with `{error}`; on success creates the row, bumps the team
+  revision once (`TeamRevision::bump` — registry rows fire no observer), returns
+  `{success, item: fresh(['barcodes'])}` with 201 so clients get the updated payload
+  in one shot.
+- **detach**: `{barcode}` matches row id first, then code within that item; `?code=`
+  overrides both; the row must belong to the path item (else 404). Deletes the row,
+  bumps the revision once, returns `{success, item: fresh(['barcodes'])}`.
+- **Payload decision (documented, pinned by test)**: `show()` returns the full
+  `barcodes` row objects (parity with the `labels` relation already there; the row id
+  doubles as the DELETE target); `index()`/`?since=` deltas stay **lean — no
+  barcodes**. This is the ticket's sanctioned "list-only" alternative; clients re-pull
+  an item after a registry write (the revision bump tells them *something* changed).
+  Deviation note: payload carries row objects instead of the sketched bare-string
+  array — same rationale (ids for DELETE + parity with labels).
+- **Semantics pinned by tests**: registry writes never touch the item's `updated_at`
+  (deltas carry no item body for barcode changes) but bump the revision; trashed-item
+  codes stay reserved (409 on reuse) until hard delete.
+- **Tests**: `tests/Feature/ItemBarcodeTest.php` — 11 tests: attach/payload/201 +
+  optional type; lean index; trim+case-sensitivity; duplicate 409 (same + other item);
+  cross-team same code ok; detach by id / code-path / `?code=`; revision-vs-updated_at;
+  403 matrix (token, Read-Only member, foreign item, detach); 404s (unknown id, code
+  on another item); soft-delete hiding + reservation; validation (missing code, >191
+  lengths).
+- **Verification**: `--filter ItemBarcodeTest` 11/11; full suite 202 tests / 717
+  assertions / 4 pre-existing Jetstream skips, green.
