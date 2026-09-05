@@ -14,9 +14,9 @@ use Illuminate\Database\Eloquent\SoftDeletes;
  * Tombstone contract (API-005): deleting an item soft-deletes it. Trashed
  * rows disappear from every default query (global scope), so the API and
  * kanban behave exactly as with hard deletes; the row survives with
- * `deleted_at` set so delta sync (API-006) can report deleted ids. Children
- * keep their `parent_id` pointing at the trashed parent (interim policy —
- * API-008 decides the final semantics).
+ * `deleted_at` set so delta sync (API-006) can report deleted ids. Deletion
+ * policy (API-008): direct children are re-parented to root, with one
+ * history row each, and reported as `detached_ids` by DELETE api/item/:id.
  */
 class Item extends Model
 {

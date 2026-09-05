@@ -55,8 +55,9 @@ web SPA ignores extra fields.
 > **Prerequisite done (2026-09, API-005)** — items are now **soft-deleted**
 > (`items.deleted_at` + index, `SoftDeletes` on the model). Deletions survive as
 > tombstone rows while every existing query/route behaves as before. Pinned by
-> `tests/Feature/ItemSoftDeleteTest.php`. Interim policy: children of a deleted box keep
-> their `parent_id` (API-008 decides the final semantics).
+> `tests/Feature/ItemSoftDeleteTest.php`. Interim policy (superseded by API-008):
+> children of a deleted box briefly kept their `parent_id` — **API-008 has since
+> decided: children are detached to root**.
 
 **Why** — every client refresh downloads the *entire* items table. With a
 handful of PDAs syncing on MV-014's background schedule (plus the web SPA),
@@ -142,6 +143,15 @@ wider than a normal SPA).
 ---
 
 ## 5. Deletion semantics for non-empty boxes
+
+> **Decided + implemented (2026-09, API-008)** — the recommended option shipped:
+> deleting a box **re-parents its direct children to root** and reports them in the
+> additive response field `{"success": "success", "detached_ids": [...]}`. One
+> history row per detached child (`parent_id: <box id> → null`); grandchildren keep
+> their own parents; everything in one transaction (mid-failure rolls back the
+> whole delete). Detached children's `updated_at` moves, so API-006 deltas report
+> them as `changed` while the box lands in `deleted_ids`. Pinned by
+> `tests/Feature/ItemDeletionPolicyTest.php`.
 
 **Why** — `DELETE api/item/:id` on a box that still has children: today the
 client never learns the policy (the Transfer flow simply hides the item on

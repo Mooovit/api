@@ -538,6 +538,16 @@ class ItemController extends Controller
     /**
      * Remove the specified resource from storage.
      *
+     * API-008 deletion policy (decided): deleting a box re-parents its direct
+     * children to root (they survive as roots) and reports their ids in the
+     * additive `detached_ids` response field. One history row per detached
+     * child (`parent_id: <box id> -> null`), everything in one transaction.
+     * Grandchildren are untouched (they keep their own parents); trashed
+     * children are never modified (the soft-delete scope skips them). The
+     * `deleted` event bumps the team revision once (API-003 observer); the
+     * mass detach fires no events but does bump the children's `updated_at`,
+     * so API-006 deltas report them as changed.
+     *
      * @param Request $request
      * @param Item $item
      * @return JsonResponse
@@ -554,7 +564,34 @@ class ItemController extends Controller
             throw new AuthorizationException();
         }
 
-        $item->delete();
-        return response()->json(['success' => 'success']);
+        $detachedIds = DB::transaction(function () use ($item, $user) {
+            $children = Item::where('parent_id', $item->id)->get();
+            $detachedAt = now();
+
+            foreach ($children as $child) {
+                History::create([
+                    'item_id' => $child->id,
+                    'user_id' => $user->id,
+                    'field_name' => 'parent_id',
+                    'old_value' => $item->id,
+                    'new_value' => null,
+                    'changed_at' => $detachedAt,
+                ]);
+            }
+
+            /* Mass update: no model events, one query for the whole detach */
+            if ($children->isNotEmpty()) {
+                Item::where('parent_id', $item->id)->update([
+                    'parent_id' => null,
+                    'updated_at' => $detachedAt,
+                ]);
+            }
+
+            $item->delete();
+
+            return $children->pluck('id')->all();
+        });
+
+        return response()->json(['success' => 'success', 'detached_ids' => $detachedIds]);
     }
 }

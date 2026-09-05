@@ -77,7 +77,7 @@ class ItemSoftDeleteTest extends TestCase
             ->assertStatus(404);
     }
 
-    public function test_children_of_deleted_box_keep_their_parent_id(): void
+    public function test_children_of_deleted_box_are_detached_to_root(): void
     {
         [$user, $team] = $this->newUserWithTeam();
         $parent = Item::factory()->onTeam($team)->create();
@@ -87,9 +87,9 @@ class ItemSoftDeleteTest extends TestCase
             ->deleteJson("/api/item/{$parent->id}")
             ->assertOk();
 
-        /* Interim policy (documented): children keep pointing at the trashed
-           parent — API-008 decides the final deletion semantics. */
-        $this->assertSame($parent->id, $child->fresh()->parent_id);
+        /* Final policy (API-008): children are re-parented to root — pinned
+           in detail by ItemDeletionPolicyTest. */
+        $this->assertNull($child->fresh()->parent_id);
     }
 
     public function test_trashed_parent_is_rejected_on_store(): void
