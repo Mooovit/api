@@ -400,6 +400,34 @@ the fleet.
 
 ---
 
+## 13. Savepoint backups
+
+> **Implemented (2026-09, API-018)** — `POST api/backups` snapshots the
+> effective team (API-015; team-level, not item-addressed) into one zip on
+> the `local` disk under `backups/{team_id}/{backup_id}.zip`: a CSV per
+> entity — `items.csv` (all columns, header line, **soft-deleted tombstones
+> included** with their `deleted_at` — a savepoint is a full snapshot),
+> `locations.csv`, `statuses.csv`, `labels.csv`. The `backups` row records
+> the creator (`user_id` — "this backup belongs to that user", provenance
+> not an ACL) and per-entity counts. `GET api/backups` lists the team's
+> metadata newest-first (`{id, user_id, size, item_count, location_count,
+> status_count, label_count, url, created_at}` — every shape flows through
+> `Backup::metadata()`, filesystem paths never leave the server); `GET
+> api/backup/:id` streams the zip (`application/zip`, filename
+> `backup-{team}-{timestamp}.zip`); `DELETE api/backup/:id` removes row +
+> file (`{"success": "success"}`). Authorization: `item:write` for
+> create/delete, `item:read` for list/download — team permission **and**
+> token ability (resource-addressed verbs check the backup's own team).
+> Retention: after each create only the **last 7 backups of the team** are
+> kept — older rows deleted with their files (a manual DELETE frees a
+> slot). Create and delete bump the team revision once each (API-003).
+>
+> Follow-ups: comparing two backups (API-019); scheduled auto-backups
+> (API-020); S3 offload with the 7-backup cap applying only without a
+> bucket (API-021).
+
+---
+
 ## Suggested order
 
 1. **Idea 1** (`updated_at` on lists) — one field, unblocks three client

@@ -3,6 +3,7 @@
 use App\Http\Controllers\ActivityController;
 use App\Http\Controllers\AttachmentController;
 use App\Http\Controllers\AuditController;
+use App\Http\Controllers\BackupController;
 use App\Http\Controllers\DeviceTokenController;
 use App\Http\Controllers\DeviceTeamController;
 use App\Http\Controllers\EnrollmentCodeController;
@@ -117,5 +118,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('item/{item}/attachments', [AttachmentController::class, 'index']);
     Route::get('attachment/{attachment}', [AttachmentController::class, 'show']);
     Route::delete('attachment/{attachment}', [AttachmentController::class, 'destroy']);
+
+    /* API-018: savepoint backups — CSV snapshot per team, last 7 kept */
+    Route::get('backups', [BackupController::class, 'index']);
+    Route::post('backups', [BackupController::class, 'store']);
+    Route::get('backup/{backup}', [BackupController::class, 'show']);
+    Route::delete('backup/{backup}', [BackupController::class, 'destroy']);
 
 });

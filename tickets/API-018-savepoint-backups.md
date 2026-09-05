@@ -3,7 +3,7 @@ id: API-018
 title: "Savepoint backups — CSV dumps of a team's data"
 type: feature
 priority: P1
-status: ready
+status: in-review
 depends_on: [API-001]
 spec: "user request (Matthieu, 2026-09): savepoints dump items/locations/statuses/labels into CSVs, stored on the server, owned by a user, downloadable; last 7 per team kept"
 ---
@@ -22,11 +22,11 @@ One endpoint family: create a snapshot (CSV per entity type, zipped on
 download), list/inspect/delete snapshots, retention = last 7 per team.
 
 ## Scope — Must have
-- [ ] Migration: `backups` table — uuid PK, `team_id` (indexed), `user_id`
+- [x] Migration: `backups` table — uuid PK, `team_id` (indexed), `user_id`
       (creator — "belongs to that user"), `disk` (default `local`),
       `path` (unique), `size` (unsigned int), `item_count`/`location_count`/
       `status_count`/`label_count` (unsigned ints), `timestamps`.
-- [ ] `POST api/backups` — dumps the calling team's data as one CSV per entity:
+- [x] `POST api/backups` — dumps the calling team's data as one CSV per entity:
       `items.csv`, `locations.csv`, `statuses.csv`, `labels.csv` (all rows,
       all columns, header line, soft-deleted items included with their
       `deleted_at` — a savepoint is a full snapshot). Stored under
@@ -35,20 +35,20 @@ download), list/inspect/delete snapshots, retention = last 7 per team.
       Authorization: `item:write` + resource-team style (the team from the
       request context — `currentTeam`, as this is team-level, not
       item-addressed).
-- [ ] Retention: after each create, keep only the **last 7** backups of the
+- [x] Retention: after each create, keep only the **last 7** backups of the
       team — older rows are deleted together with their stored files.
-- [ ] `GET api/backups` — metadata list for the team, newest first:
+- [x] `GET api/backups` — metadata list for the team, newest first:
       `{id, user_id, size, item_count, location_count, status_count,
       label_count, url, created_at}` (`url` = authenticated download route;
       filesystem paths never serialized).
-- [ ] `GET api/backup/{backup}` — streams the zip
+- [x] `GET api/backup/{backup}` — streams the zip
       (`Storage::response`, `application/zip`, filename
       `backup-{team}-{timestamp}.zip`); `item:read` + same-team only.
-- [ ] `DELETE api/backup/{backup}` — removes row + file; `{"success": "success"}`
+- [x] `DELETE api/backup/{backup}` — removes row + file; `{"success": "success"}`
       (house style); `item:write`.
-- [ ] Writes bump the team revision (API-003 helper — backups are not
+- [x] Writes bump the team revision (API-003 helper — backups are not
       observer-registered).
-- [ ] Feature tests.
+- [x] Feature tests.
 
 ## Out of scope
 - Comparing two backups (API-019); scheduled auto-backups (API-020); S3
@@ -58,16 +58,16 @@ download), list/inspect/delete snapshots, retention = last 7 per team.
   backup (explicitly not requested).
 
 ## Acceptance criteria
-- [ ] Round-trip: create on a populated team → metadata counts match the
+- [x] Round-trip: create on a populated team → metadata counts match the
       tables; download returns a valid zip whose CSVs parse back to exactly
       the dumped rows (items incl. a soft-deleted one); delete removes row +
       file.
-- [ ] Retention: creating the 8th backup deletes the oldest (row + file gone,
+- [x] Retention: creating the 8th backup deletes the oldest (row + file gone,
       count stays 7); manual `DELETE` frees a slot (retention counts rows).
-- [ ] Validation/auth: read-only token → 403 on create/delete, allowed on
+- [x] Validation/auth: read-only token → 403 on create/delete, allowed on
       list/download; foreign-team backup → 403 on all verbs; unknown id → 404.
-- [ ] Metadata never exposes `path`/`disk` (pinned like API-013).
-- [ ] Revision bump per create/delete (baseline-relative assertions).
+- [x] Metadata never exposes `path`/`disk` (pinned like API-013).
+- [x] Revision bump per create/delete (baseline-relative assertions).
 
 ## Technical notes
 - Build CSVs with `fopen('php://temp')` + `fputcsv` and stream them into a
@@ -83,3 +83,57 @@ download), list/inspect/delete snapshots, retention = last 7 per team.
   contents, counts, download via `streamedContent()`), retention (8th push +
   delete-frees-slot), list shape/order (no `path`/`disk`), permission matrix,
   404s, revision bumps.
+
+## Implementation Report
+
+**Status**: done — 4 new tests in `tests/Feature/BackupTest.php` (81
+assertions), full suite 261 tests / 1199 assertions / 4 skips (pre-existing
+Jetstream skips).
+
+**Production changes**
+- `backups` table (uuid PK, `team_id`/`user_id` FKs cascade, `disk` default
+  `local`, unique `path`, `size` + four per-entity counts) + `Backup` model
+  (`Uuids`, `metadata()` mirroring `Attachment::metadata()` — no
+  `disk`/`path` in payloads, `url` = authenticated download route).
+- `BackupController`: `store()` streams each entity table through a
+  `php://temp` handle into a `ZipArchive` written to a temp file (`fputcsv`
+  header line + rows over a query-builder `cursor()` — raw table content,
+  no Eloquent machinery; items include soft-deleted tombstones because
+  plain query builder ignores Eloquent's soft-delete scope), stores under
+  `backups/{team_id}/{backup_id}.zip`, then creates the row (id minted up
+  front so the path can carry it), prunes to the last 7 and bumps the team
+  revision once. `index()` newest-first metadata. `show()` streams the zip
+  (`application/zip`, `backup-{team}-{timestamp}.zip`). `destroy()` row +
+  file in a transaction, one revision bump. Retention pruning rides along
+  with the create (no extra bump — it is internal cleanup).
+- Routes: `GET/POST api/backups`, `GET/DELETE api/backup/{backup}` inside
+  the auth group.
+
+**Pinned decisions**
+- Authorization split: create/list are team-level and resolve the team via
+  API-015's `effectiveTeam()` (the request-context team — the ticket's
+  "`currentTeam`" wording predates API-015 and is superseded by it, same as
+  `GET api/revision`); download/delete are resource-addressed and check the
+  backup's own team (API-001 pattern). Team permission **and** token
+  ability everywhere (`item:write` create/delete, `item:read`
+  list/download).
+- `user_id` is provenance, not an ACL — any member with read sees every
+  team backup (out-of-scope note honored).
+
+**Test findings worth keeping**
+- `skip(7)` without a limit compiles to bare `OFFSET 7` — a syntax error on
+  SQLite (and Postgres): `OFFSET` requires a `LIMIT`. Use
+  `->take(PHP_INT_MAX)` alongside `->skip()` (now in `prune()`).
+- Retention ordering is `created_at desc, id desc` — uuid4 ids are random,
+  so same-second creates tie arbitrarily; the retention test spaces its
+  eight creates a minute apart with `$this->travelTo()` (and resets
+  `Carbon::setTestNow()` after) to pin "oldest dies" deterministically.
+- PHP 8.4 deprecates relying on the default `$escape` of
+  `fputcsv`/`str_getcsv` — both called with explicit `(',', '"', '\\')` in
+  production and test parsing.
+- CSV column order differs per table (locations vs statuses vs labels) —
+  the test locates columns through the header row
+  (`array_search('name', $header)`), never by position.
+
+**Deviations from spec**: `currentTeam` → `effectiveTeam()` (documented
+above); everything else as specified.
