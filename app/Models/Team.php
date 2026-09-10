@@ -63,5 +63,21 @@ class Team extends JetstreamTeam
     {
         return $this->hasOne(TeamS3Config::class);
     }
+
+    /**
+     * API-023: case-insensitive membership check. Jetstream's default
+     * compares emails exactly (`where('email', $email)`), which misses
+     * Member@X.com vs member@x.com on SQLite and lets duplicate membership
+     * slip through case variants.
+     *
+     * @param  string  $email
+     * @return bool
+     */
+    public function hasUserWithEmail(string $email): bool
+    {
+        return $this->users()
+            ->whereRaw('lower(email) = ?', [strtolower($email)])
+            ->exists();
+    }
 }
 

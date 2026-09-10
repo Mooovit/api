@@ -86,6 +86,63 @@ class LabelApiTest extends TestCase
             ->deleteJson("/api/labels/{$label->id}")
             ->assertOk()
             ->assertJsonPath('success', true);
+
+        $this->assertDatabaseMissing('labels', ['id' => $label->id]);
+    }
+
+    public function test_update_and_destroy_reject_foreign_team_labels(): void
+    {
+        [$user] = $this->newUserWithTeam();
+        [$stranger] = $this->newUserWithTeam();
+        $foreign = Label::factory()->onTeam($stranger->ownedTeams()->first())
+            ->create(['name' => 'Foreign', 'color' => '#123456']);
+
+        $this->actingAsApi($user, ['item:write'])
+            ->patchJson("/api/labels/{$foreign->id}", ['name' => 'Hijacked', 'color' => '#654321'])
+            ->assertStatus(403);
+
+        $this->actingAsApi($user, ['item:write'])
+            ->deleteJson("/api/labels/{$foreign->id}")
+            ->assertStatus(403);
+
+        $this->assertSame('Foreign', $foreign->fresh()->name);
+    }
+
+    public function test_destroy_requires_item_write(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $label = Label::factory()->onTeam($team)->create();
+
+        $this->actingAsApi($user, ['item:read'])
+            ->deleteJson("/api/labels/{$label->id}")
+            ->assertStatus(403);
+
+        $this->assertDatabaseHas('labels', ['id' => $label->id]);
+    }
+
+    public function test_read_only_member_cannot_update_or_delete_labels(): void
+    {
+        [$owner, $team] = $this->newUserWithTeam();
+        $viewer = $this->addTeamMember(User::factory()->create(), $team, 'Read Only');
+        $label = Label::factory()->onTeam($team)->create(['name' => 'Fragile', 'color' => '#123456']);
+
+        $this->actingAsApi($viewer, ['item:write'])
+            ->patchJson("/api/labels/{$label->id}", ['name' => 'X', 'color' => '#654321'])
+            ->assertStatus(403);
+
+        $this->actingAsApi($viewer, ['item:write'])
+            ->deleteJson("/api/labels/{$label->id}")
+            ->assertStatus(403);
+
+        $this->assertSame('Fragile', $label->fresh()->name);
+    }
+
+    public function test_label_routes_require_authentication(): void
+    {
+        $this->getJson('/api/labels')->assertStatus(401);
+        $this->postJson('/api/labels', ['name' => 'X', 'color' => '#123456'])->assertStatus(401);
+        $this->patchJson('/api/labels/some-id', ['name' => 'X', 'color' => '#654321'])->assertStatus(401);
+        $this->deleteJson('/api/labels/some-id')->assertStatus(401);
     }
 
     /* ------------------------------------------------------------------ */

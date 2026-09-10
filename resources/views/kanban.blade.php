@@ -132,6 +132,10 @@
                         <i class="fas fa-tasks mr-3"></i>
                         Manage Statuses
                     </button>
+                    <button onclick="openManagementModal('label')" class="sidebar-item w-full flex items-center px-3 py-2 rounded-lg text-sm font-medium text-gray-700 hover:text-indigo-600">
+                        <i class="fas fa-tags mr-3"></i>
+                        Manage Labels
+                    </button>
 
                     <button onclick="openFilterModal()" class="sidebar-item w-full flex items-center px-3 py-2 rounded-lg text-sm font-medium text-gray-700 hover:text-indigo-600">
                         <i class="fas fa-filter mr-3"></i>
@@ -183,6 +187,15 @@
                     <button onclick="refreshBoard()" class="text-gray-600 hover:text-indigo-600 transition">
                         <i class="fas fa-sync-alt"></i>
                     </button>
+                    <!-- Live sync badge: green while the revision poll is healthy -->
+                    <div id="live-indicator"
+                         class="flex items-center gap-1.5 text-xs font-medium text-gray-400 bg-gray-100 px-2.5 py-1 rounded-full transition-colors"
+                         title="Live sync — polls the team revision and pulls only what changed">
+                        <span id="live-dot" class="w-2 h-2 rounded-full bg-gray-400"></span>
+                        <span id="live-label">Live</span>
+                        <span class="text-gray-300">|</span>
+                        <span class="text-gray-500">rev <span id="revision-badge">{{ $revision }}</span></span>
+                    </div>
                     <div class="text-sm text-gray-500" id="last-updated">
                         Last updated: <span id="update-time">{{ now()->format('H:i:s') }}</span>
                     </div>
@@ -237,7 +250,10 @@
                                             </span>
                                             @endif
                                         </div>
-                                        <div class="text-xs text-gray-400">
+                                        <div class="text-xs text-gray-400 flex items-center gap-2">
+                                            <button onclick="event.stopPropagation(); showCardQr('{{ $item['id'] }}')" title="Show public share QR" class="hover:text-indigo-600">
+                                                <i class="fas fa-qrcode"></i>
+                                            </button>
                                             <i class="fas fa-grip-vertical"></i>
                                         </div>
                                     </div>
@@ -328,13 +344,13 @@
                     <div class="flex items-center justify-between mb-6">
                         <h3 class="text-xl font-bold text-gray-800">
                             <i class="fas fa-cog text-indigo-600 mr-2"></i>
-                            Manage Statuses & Locations
+                            Manage Statuses, Locations & Labels
                         </h3>
                         <button onclick="closeManagementModal()" class="text-gray-400 hover:text-gray-600">
                             <i class="fas fa-times"></i>
                         </button>
                     </div>
-                    
+
                     <!-- Tab Navigation -->
                     <div class="flex mb-6 bg-gray-100 rounded-lg p-1">
                         <button onclick="switchManagementTab('status')" id="statusTab" class="flex-1 py-2 px-4 rounded-md text-sm font-medium transition management-tab active">
@@ -343,7 +359,9 @@
                         <button onclick="switchManagementTab('location')" id="locationTab" class="flex-1 py-2 px-4 rounded-md text-sm font-medium transition management-tab">
                             <i class="fas fa-map-marker-alt mr-2"></i>Locations
                         </button>
-
+                        <button onclick="switchManagementTab('label')" id="labelTab" class="flex-1 py-2 px-4 rounded-md text-sm font-medium transition management-tab">
+                            <i class="fas fa-tags mr-2"></i>Labels
+                        </button>
                     </div>
                     
                     <!-- Status Management -->
@@ -419,7 +437,46 @@
                             </div>
                         </div>
                     </div>
-                    
+
+                    <!-- Label Management -->
+                    <div id="labelManagement" class="management-content hidden">
+                        <!-- Add New Label -->
+                        <div class="bg-gray-50 rounded-lg p-4 mb-6">
+                            <h4 class="font-semibold text-gray-800 mb-3">Add New Label</h4>
+                            <div class="flex gap-3">
+                                <input type="color" id="newLabelColor" value="#6366f1"
+                                       class="w-12 h-10 rounded border border-gray-300 cursor-pointer p-1">
+                                <input type="text" id="newLabelName" placeholder="Enter label name"
+                                       class="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                                <button onclick="createNewLabel()" class="bg-green-600 hover:bg-green-700 text-white py-2 px-4 rounded-lg font-medium transition">
+                                    <i class="fas fa-plus mr-2"></i>Add
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Existing Labels -->
+                        <div>
+                            <h4 class="font-semibold text-gray-800 mb-3">Existing Labels</h4>
+                            <div class="space-y-2">
+                                @foreach($labels as $label)
+                                <div class="flex items-center justify-between p-3 bg-white border rounded-lg" data-id="{{ $label->id }}" data-type="label">
+                                    <div class="flex items-center gap-3 flex-1">
+                                        <input type="color" value="{{ $label->color }}" class="label-color-input w-9 h-9 rounded border border-gray-300 cursor-pointer p-1" disabled>
+                                        <input type="text" value="{{ $label->name }}" class="edit-input bg-transparent border-none p-0 font-medium text-gray-800 w-full" readonly>
+                                    </div>
+                                    <div class="flex gap-2">
+                                        <button onclick="editLabel('{{ $label->id }}')" class="text-blue-600 hover:text-blue-800">
+                                            <i class="fas fa-edit"></i>
+                                        </button>
+                                        <button onclick="deleteLabel('{{ $label->id }}')" class="text-red-600 hover:text-red-800">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                                @endforeach
+                            </div>
+                        </div>
+                    </div>
 
                 </div>
             </div>
@@ -589,6 +646,34 @@
 
 
 
+    <!-- Share QR Modal (API-025): renders the item's public share URL -->
+    <div id="qrModal" class="fixed inset-0 z-50 hidden modal bg-black/40">
+        <div class="flex items-center justify-center min-h-screen p-4">
+            <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm">
+                <div class="p-6 text-center">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-lg font-bold text-gray-800">
+                            <i class="fas fa-qrcode text-indigo-600 mr-2"></i>
+                            Public Share QR
+                        </h3>
+                        <button onclick="closeQrModal()" class="text-gray-400 hover:text-gray-600">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <div id="qrItemName" class="font-medium text-gray-700 mb-3 truncate"></div>
+                    <div class="flex justify-center">
+                        <div id="qrCodeTarget" class="p-3 bg-white border border-gray-200 rounded-lg inline-block"></div>
+                    </div>
+                    <div id="qrShareUrl" class="mt-3 text-xs text-gray-500 break-all select-all"></div>
+                    <div class="mt-4 text-xs text-gray-400">Scan to open the read-only public page — no login needed.</div>
+                    <button onclick="copyQrShareUrl()" class="mt-4 w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2 px-4 rounded-lg font-medium transition">
+                        <i class="fas fa-copy mr-2"></i>Copy link
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Audio elements for sound effects -->
     <audio id="successSound" preload="auto">
         <source src="{{ asset('success.mp3') }}" type="audio/mpeg">
@@ -603,17 +688,26 @@
         <source src="{{ asset('warning-label.mp3') }}" type="audio/mpeg">
     </audio>
 
+    <!-- Vendored QR generator (API-025): davidshimjs/qrcodejs 1.0.0, MIT
+         license — vanilla JS, renders SVG/table, no CDN (works on the LAN). -->
+    <script src="{{ asset('js/vendor/qrcode.min.js') }}"></script>
+
     <!-- Custom Kanban JS -->
     <script src="{{ asset('js/kanban.js') }}?v={{ time() }}"></script>
     
 <script>
 
-        
+
         // Initialize the kanban board when DOM is loaded
         document.addEventListener('DOMContentLoaded', function() {
-            initializeKanban('{{ $type }}', '{{ $query["field"] }}');
-            
-            // Initialize real-time updates
+            initializeKanban(
+                '{{ $type }}',
+                '{{ $query["field"] }}',
+                {{ (int) $revision }},
+                '{{ $builtAt->toISOString() }}'
+            );
+
+            // Initialize real-time updates (revision polling + delta pulls)
             startRealTimeUpdates();
     });
 </script>

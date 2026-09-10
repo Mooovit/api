@@ -332,4 +332,58 @@ class ItemApiTest extends TestCase
         $this->assertNotNull($history);
         $this->assertSame($user->id, $history->user_id);
     }
+
+    public function test_writes_reject_trashed_status_and_location_ids(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $liveStatus = \App\Models\Status::factory()->onTeam($team)->create();
+        $liveLocation = \App\Models\Location::factory()->onTeam($team)->create();
+        $item = Item::factory()->onTeam($team)
+            ->withStatus($liveStatus)
+            ->inLocation($liveLocation)
+            ->create();
+
+        $trashedStatus = \App\Models\Status::factory()->onTeam($team)->create();
+        $trashedLocation = \App\Models\Location::factory()->onTeam($team)->create();
+        $trashedStatus->delete();
+        $trashedLocation->delete();
+
+        /* store */
+        $this->actingAsApi($user, ['item:write'])
+            ->postJson('/api/item', [
+                'name' => 'Box',
+                'team_id' => $team->id,
+                'location_id' => $trashedLocation->id,
+                'status_id' => $liveStatus->id,
+            ])
+            ->assertStatus(422);
+
+        /* update */
+        $this->actingAsApi($user, ['item:write'])
+            ->patchJson("/api/item/{$item->id}", ['status_id' => $trashedStatus->id])
+            ->assertStatus(422);
+
+        /* assign */
+        $this->actingAsApi($user, ['item:write'])
+            ->postJson("/api/item/{$item->id}/assign", [
+                'status_id' => $liveStatus->id,
+                'location_id' => $trashedLocation->id,
+            ])
+            ->assertStatus(422);
+
+        /* bulk-assign */
+        $this->actingAsApi($user, ['item:write'])
+            ->postJson('/api/item/bulk-assign', [
+                'ids' => [$item->id],
+                'status_id' => $trashedStatus->id,
+                'location_id' => $liveLocation->id,
+            ])
+            ->assertStatus(422);
+
+        /* Nothing was written anywhere */
+        $item->refresh();
+        $this->assertSame($liveStatus->id, $item->status_id);
+        $this->assertSame($liveLocation->id, $item->location_id);
+        $this->assertDatabaseMissing('items', ['name' => 'Box']);
+    }
 }

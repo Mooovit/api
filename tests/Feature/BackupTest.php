@@ -17,8 +17,8 @@ use Tests\TestCase;
 use ZipArchive;
 
 /**
- * API-018: savepoint backups — CSV snapshot per team (items with
- * soft-deleted tombstones, locations, statuses, labels), zipped on the
+ * API-018: savepoint backups — CSV snapshot per team (items, locations,
+ * statuses, labels — soft-deleted rows excluded), zipped on the
  * server, owned by the creating user, downloadable, last 7 per team kept.
  */
 class BackupTest extends TestCase
@@ -96,7 +96,7 @@ class BackupTest extends TestCase
             ->json();
 
         $this->assertSame($user->id, $created['user_id']);
-        $this->assertSame(3, $created['item_count']);
+        $this->assertSame(2, $created['item_count']); /* the trashed item is not dumped */
         $this->assertSame(2, $created['location_count']);
         $this->assertSame(2, $created['status_count']);
         $this->assertSame(1, $created['label_count']);
@@ -129,25 +129,17 @@ class BackupTest extends TestCase
         $bytes = $download->streamedContent();
         $this->assertStringStartsWith('PK', $bytes);
 
-        /* The CSVs parse back to exactly the dumped rows — including the
-           soft-deleted item with its deleted_at */
+        /* The CSVs parse back to exactly the dumped rows — soft-deleted
+           rows excluded (a savepoint reflects what a device would sync) */
         $csvs = $this->unzip($bytes);
 
         $items = $this->parseCsv($csvs['items']);
-        $this->assertCount(4, $items); // header + 3
+        $this->assertCount(3, $items); // header + 2
         $nameCol = array_search('name', $items[0], true);
-        $deletedCol = array_search('deleted_at', $items[0], true);
         $names = array_column($items, $nameCol);
         $this->assertContains('Alpha', $names);
         $this->assertContains('Bravo', $names);
-        $this->assertContains('Trashed', $names);
-        $trashRow = $items[array_search('Trashed', $names, true)];
-        $this->assertNotSame('', $trashRow[$deletedCol]);
-        foreach ($items as $index => $row) {
-            if ($index > 0 && $row[$nameCol] !== 'Trashed') {
-                $this->assertSame('', $row[$deletedCol]);
-            }
-        }
+        $this->assertNotContains('Trashed', $names);
 
         $locations = $this->parseCsv($csvs['locations']);
         $this->assertCount(3, $locations); // header + 2

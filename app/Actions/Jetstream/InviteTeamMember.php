@@ -17,6 +17,10 @@ class InviteTeamMember implements InvitesTeamMembers
     /**
      * Invite a new team member to the given team.
      *
+     * API-023: the address is lowercased before validation/storage/mail so
+     * duplicate-invite detection and the accept-time lookup are effectively
+     * case-insensitive.
+     *
      * @param  mixed  $user
      * @param  mixed  $team
      * @param  string  $email
@@ -26,6 +30,8 @@ class InviteTeamMember implements InvitesTeamMembers
     public function invite($user, $team, string $email, string $role = null)
     {
         Gate::forUser($user)->authorize('addTeamMember', $team);
+
+        $email = strtolower($email);
 
         $this->validate($team, $email, $role);
 

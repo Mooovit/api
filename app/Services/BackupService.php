@@ -42,8 +42,8 @@ class BackupService
     }
 
     /**
-     * Snapshot a team: one CSV per entity (items — soft-deleted tombstones
-     * included, locations, statuses, labels) into a zip on the `local` disk,
+     * Snapshot a team: one CSV per entity (items, locations, statuses,
+     * labels — soft-deleted rows excluded) into a zip on the `local` disk,
      * then the metadata row, then retention (keep the last 7 of the team)
      * and a single revision bump (API-003 — backup rows are not
      * observer-registered, retention pruning is internal cleanup riding
@@ -131,7 +131,10 @@ class BackupService
     /**
      * The entity tables dumped into the archive, keyed by CSV file name.
      * Plain query builder (not Eloquent): all rows, all columns, no model
-     * machinery — the raw table content is the snapshot.
+     * machinery — the raw table content is the snapshot. Soft-deleted rows
+     * are excluded: a savepoint reflects what a device would sync, so a
+     * deleted item/location/status leaves the snapshot and a later compare
+     * reports it as `removed` (not as a `deleted_at` field change).
      *
      * @param string $teamId
      * @return array<string, \Illuminate\Database\Query\Builder>
@@ -139,9 +142,9 @@ class BackupService
     private function dumps(string $teamId): array
     {
         return [
-            'items' => DB::table('items')->where('team_id', $teamId)->orderBy('created_at'),
-            'locations' => DB::table('locations')->where('team_id', $teamId)->orderBy('created_at'),
-            'statuses' => DB::table('statuses')->where('team_id', $teamId)->orderBy('created_at'),
+            'items' => DB::table('items')->where('team_id', $teamId)->whereNull('deleted_at')->orderBy('created_at'),
+            'locations' => DB::table('locations')->where('team_id', $teamId)->whereNull('deleted_at')->orderBy('created_at'),
+            'statuses' => DB::table('statuses')->where('team_id', $teamId)->whereNull('deleted_at')->orderBy('created_at'),
             'labels' => DB::table('labels')->where('team_id', $teamId)->orderBy('created_at'),
         ];
     }

@@ -130,7 +130,10 @@ class ActivityController extends Controller
 
         $histories = History::with(['item:id,name', 'user:id,name'])
             ->whereIn('id', $historyIds)->get()->keyBy('id');
-        $audits = Audit::with(['user:id,name', 'location:id,name'])
+        /* API-027: the audit location eager load is trashed-inclusive —
+           stocktake rows keep `location_name` after the location is deleted */
+        $audits = Audit::with(['user:id,name',
+            'location' => fn ($q) => $q->withTrashed()->select('id', 'name')])
             ->whereIn('id', $auditIds)->get()->keyBy('id');
 
         $rows = $slice->map(function (array $entry) use ($histories, $audits) {

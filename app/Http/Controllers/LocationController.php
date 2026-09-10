@@ -14,6 +14,12 @@ class LocationController extends Controller
     /**
      * Display a listing of the resource.
      *
+     * API-027: the catalogue is trashed-INCLUSIVE — soft-deleted rows are
+     * returned too (serializing a non-null `deleted_at`; live rows keep
+     * `deleted_at: null`) so clients holding history rows that reference a
+     * deleted location can still resolve its name. Writes and route bindings
+     * (show/update/destroy) stay default-scoped: a trashed id is a plain 404.
+     *
      * @param Request $request
      * @return Collection
      * @throws AuthorizationException
@@ -30,7 +36,7 @@ class LocationController extends Controller
         ) {
             throw new AuthorizationException();
         }
-        return Location::where('team_id', $team->id)->get();
+        return Location::where('team_id', $team->id)->withTrashed()->get();
     }
 
     /**

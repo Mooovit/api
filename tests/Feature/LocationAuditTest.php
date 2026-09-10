@@ -246,6 +246,32 @@ class LocationAuditTest extends TestCase
         $this->assertArrayHasKey('changed_at', $row);
     }
 
+    public function test_feed_keeps_audit_location_name_after_the_location_is_deleted(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $location = Location::factory()->onTeam($team)->create();
+        $found = Item::factory()->onTeam($team)->create();
+
+        $this->actingAsApi($user, ['item:write'])
+            ->postJson("/api/location/{$location->id}/audits", [
+                'found_ids' => [$found->id],
+            ])
+            ->assertStatus(201);
+
+        /* The location dies AFTER the stocktake — API-027: the audit row's
+           `location_name` must survive (trashed-inclusive hydration) */
+        $location->delete();
+
+        $rows = $this->actingAsApi($user, ['item:read'])
+            ->getJson('/api/activity?type=audit')
+            ->assertOk()
+            ->json('data');
+
+        $this->assertCount(1, $rows);
+        $this->assertSame($location->id, $rows[0]['location_id']);
+        $this->assertSame($location->name, $rows[0]['location_name']);
+    }
+
     public function test_feed_summary_variants(): void
     {
         [$user, $team] = $this->newUserWithTeam();

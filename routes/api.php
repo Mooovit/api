@@ -9,6 +9,7 @@ use App\Http\Controllers\DeviceTeamController;
 use App\Http\Controllers\EnrollmentCodeController;
 use App\Http\Controllers\HistoryController;
 use App\Http\Controllers\ItemController;
+use App\Http\Controllers\ItemShareController;
 use App\Http\Controllers\LabelController;
 use App\Http\Controllers\LocationController;
 use App\Http\Controllers\ItemBarcodeController;
@@ -85,6 +86,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('item/{item}/move', [ItemController::class, 'move']);
     Route::post('item/{item}/assign', [ItemController::class, 'assign']);
     Route::post('item/{item}/rename', [ItemController::class, 'rename']);
+    /* API-032: temporary out-of-box state — pick (out) / unpick (back).
+       Body-less; touches only picked_at, containment untouched. */
+    Route::post('item/{item}/pick', [ItemController::class, 'pick']);
+    Route::post('item/{item}/unpick', [ItemController::class, 'unpick']);
     /* API-016: cross-team item transfer (permission checks on both teams) */
     Route::post('item/{item}/transfer', [ItemController::class, 'transfer']);
     Route::resource('status', StatusController::class);
@@ -101,6 +106,12 @@ Route::middleware('auth:sanctum')->group(function () {
     /* API-011: per-team barcode registry on items */
     Route::post('item/{item}/barcodes', [ItemBarcodeController::class, 'attach']);
     Route::delete('item/{item}/barcodes/{barcode}', [ItemBarcodeController::class, 'detach']);
+
+    /* API-024: public share links — activate / state / revoke the
+       unauthenticated read-only page served at /share/{token} (web.php) */
+    Route::post('item/{item}/share', [ItemShareController::class, 'share']);
+    Route::get('item/{item}/share', [ItemShareController::class, 'show']);
+    Route::delete('item/{item}/share', [ItemShareController::class, 'unshare']);
 
     /* API-012: named, revocable device tokens for the PDA fleet */
     Route::post('device-tokens', [DeviceTokenController::class, 'store']);
@@ -127,6 +138,10 @@ Route::middleware('auth:sanctum')->group(function () {
        the {backup} binding can't conflict — 'backups' vs 'backup' — but
        keep list routes together) */
     Route::get('backups/bucket', [BackupController::class, 'bucket']);
+    /* API-030: the cold-storage backup (API-029 bundle) as JSON */
+    Route::get('backups/cold-storage', [BackupController::class, 'coldStorage']);
+    /* API-031: the same backup as a server-rendered PDF */
+    Route::get('backups/cold-storage/pdf', [BackupController::class, 'coldStoragePdf']);
     Route::get('backup/{backup}', [BackupController::class, 'show']);
     Route::delete('backup/{backup}', [BackupController::class, 'destroy']);
     /* API-019: diff two savepoints (base → target) */

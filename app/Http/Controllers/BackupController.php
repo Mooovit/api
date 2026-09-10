@@ -7,6 +7,10 @@ use App\Models\Backup;
 use App\Models\Team;
 use App\Services\BackupService;
 use App\Services\S3BackupClientFactory;
+use App\Support\BackupCompare;
+use App\Support\Backup\BackupCodec;
+use App\Support\Backup\BackupPdf;
+use App\Support\Backup\BackupSnapshotBuilder;
 use App\Support\TeamRevision;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\JsonResponse;
@@ -14,12 +18,11 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Throwable;
-use ZipArchive;
 
 /**
  * Savepoint backups (API-018): a team-scoped snapshot dumped as one CSV per
- * entity (items — soft-deleted tombstones included, locations, statuses,
- * labels), zipped and stored on the server under
+ * entity (items, locations, statuses, labels — soft-deleted rows excluded),
+ * zipped and stored on the server under
  * `backups/{team_id}/{backup_id}.zip`. The row records the creator
  * ("this backup belongs to that user"); retention keeps the last 7 backups
  * per team — older rows are deleted together with their stored files.
@@ -158,6 +161,67 @@ class BackupController extends Controller
     }
 
     /**
+     * GET api/backups/cold-storage (API-030) — the API-029 cold-storage
+     * backup as JSON: the MVBAK1 bundle (manifest + chunk frames) the
+     * printable sheet renders, generated on the fly from the live dataset.
+     * Frames decode exactly like the app's MV-137 `assemble` (per-frame
+     * CRC → manifest lengths → whole-stream SHA-256 → gunzip → parse).
+     * Gate mirrors the sheet: `item:write` (owner/Administrator) — an
+     * archive exposes the whole dataset, so Read-Only members are 403.
+     *
+     * @param Request $request
+     * @return JsonResponse
+     * @throws AuthorizationException
+     */
+    public function coldStorage(Request $request): JsonResponse
+    {
+        $team = $this->authorizeTeam($request, 'item:write');
+
+        $snapshot = BackupSnapshotBuilder::build($team, now());
+        $bundle = BackupCodec::export($snapshot);
+
+        return response()->json([
+            'schemaVersion' => $snapshot['schemaVersion'],
+            'teamId' => $team->id,
+            'exportedAt' => $snapshot['exportedAt'],
+            'manifest' => $bundle['manifest'],
+            'frames' => $bundle['frames'],
+            'chunkCount' => $bundle['chunkCount'],
+            'totalPayloadBytes' => $bundle['totalPayloadBytes'],
+            'fingerprint' => $bundle['fingerprint'],
+        ]);
+    }
+
+    /**
+     * GET api/backups/cold-storage/pdf (API-031) — the API-029 sheet as a
+     * PDF rendered SERVER-side (`BackupPdf`: FPDF layout, QRs drawn as
+     * vector rectangles from the module matrix — same content as the HTML
+     * sheet, no browser print step). Same gate as the JSON bundle:
+     * `item:write` on the effective team.
+     *
+     * @param Request $request
+     * @return \Illuminate\Http\Response
+     * @throws AuthorizationException
+     */
+    public function coldStoragePdf(Request $request)
+    {
+        $team = $this->authorizeTeam($request, 'item:write');
+
+        $snapshot = BackupSnapshotBuilder::build($team, now());
+        $bundle = BackupCodec::export($snapshot);
+        $bytes = BackupPdf::render($bundle, $team->name, $snapshot['exportedAt']);
+
+        return response($bytes, 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => sprintf(
+                'inline; filename="cold-storage-%s-%s.pdf"',
+                $team->id,
+                str_replace(':', '', $snapshot['exportedAt'])
+            ),
+        ]);
+    }
+
+    /**
      * GET api/backups (API-018) — the team's snapshot metadata, newest
      * first. Provenance only: any member with `item:read` sees the team's
      * backups (`user_id` in the payload is not an ACL).
@@ -227,16 +291,9 @@ class BackupController extends Controller
 
     /**
      * GET api/backup/{backup}/compare/{other} (API-019) — diff two
-     * savepoints of the same team: `{backup}` is the base, `{other}` the
-     * target ("what happened going from base to target"). Per entity type:
-     * `added`/`removed` full rows (identity = row id), `changed` only rows
-     * with at least one field difference as `{field: {from, to}}`, plus
-     * `counts` `{added, removed, unchanged, changed}`. Compared against the
-     * snapshots, not the live tables. Fields compare as trimmed strings;
-     * null and empty string are equal (CSV round-trip artifact). Note: the
-     * dumps include soft-deleted tombstones, so a soft-delete shows as
-     * `changed` on `deleted_at` — only rows that truly left the table are
-     * `removed`.
+     * savepoints of the same team ("what happened going from base to
+     * target"); the logic lives in `BackupCompare` so the web management
+     * UI diffs through the exact same implementation.
      *
      * @param Request $request
      * @param Backup $backup base
@@ -254,123 +311,9 @@ class BackupController extends Controller
             throw new AuthorizationException();
         }
 
-        return response()->json([
-            'generated_at' => now(),
-            'items' => $this->compareType($backup, $other, 'items'),
-            'locations' => $this->compareType($backup, $other, 'locations'),
-            'statuses' => $this->compareType($backup, $other, 'statuses'),
-            'labels' => $this->compareType($backup, $other, 'labels'),
-        ]);
-    }
-
-    /**
-     * Read one entity CSV out of a backup zip as an `id => row` map (assoc
-     * arrays, string values as the CSV carries them). An empty or missing
-     * file (empty team) yields an empty map.
-     *
-     * @param Backup $backup
-     * @param string $type
-     * @return array<string, array<string, string>>
-     */
-    private function readRows(Backup $backup, string $type): array
-    {
-        $bytes = Storage::disk($backup->disk)->get($backup->path);
-
-        $tmp = tempnam(sys_get_temp_dir(), 'compare');
-        file_put_contents($tmp, $bytes);
-        $zip = new ZipArchive();
-        $zip->open($tmp);
-        $csv = $zip->getFromName("{$type}.csv");
-        $zip->close();
-        unlink($tmp);
-
-        if ($csv === false || trim($csv) === '') {
-            return [];
-        }
-
-        $lines = explode("\n", trim($csv));
-        $header = str_getcsv(array_shift($lines), ',', '"', '\\');
-
-        $rows = [];
-        foreach ($lines as $line) {
-            if (trim($line) === '') {
-                continue;
-            }
-            $row = array_combine($header, str_getcsv($line, ',', '"', '\\'));
-            $rows[$row['id']] = $row;
-        }
-
-        return $rows;
-    }
-
-    /**
-     * Diff one entity type between base and target (see compare()).
-     *
-     * @param Backup $base
-     * @param Backup $target
-     * @param string $type
-     * @return array
-     */
-    private function compareType(Backup $base, Backup $target, string $type): array
-    {
-        $baseRows = $this->readRows($base, $type);
-        $targetRows = $this->readRows($target, $type);
-
-        $added = [];
-        foreach ($targetRows as $id => $row) {
-            if (!isset($baseRows[$id])) {
-                $added[] = $row;
-            }
-        }
-
-        $removed = [];
-        foreach ($baseRows as $id => $row) {
-            if (!isset($targetRows[$id])) {
-                $removed[] = $row;
-            }
-        }
-
-        $changed = [];
-        $unchanged = 0;
-        foreach ($targetRows as $id => $targetRow) {
-            if (!isset($baseRows[$id])) {
-                continue;
-            }
-            $diff = [];
-            foreach ($targetRow as $field => $to) {
-                $from = $baseRows[$id][$field] ?? '';
-                if ($this->normalize($from) !== $this->normalize($to)) {
-                    $diff[$field] = ['from' => $from, 'to' => $to];
-                }
-            }
-            if ($diff !== []) {
-                $changed[] = ['id' => $id, 'diff' => $diff];
-            } else {
-                $unchanged++;
-            }
-        }
-
-        return [
-            'added' => $added,
-            'removed' => $removed,
-            'changed' => $changed,
-            'counts' => [
-                'added' => count($added),
-                'removed' => count($removed),
-                'changed' => count($changed),
-                'unchanged' => $unchanged,
-            ],
-        ];
-    }
-
-    /**
-     * Comparison normalization: trimmed strings, null ≡ empty string.
-     *
-     * @param string|null $value
-     * @return string
-     */
-    private function normalize(?string $value): string
-    {
-        return trim((string) $value);
+        return response()->json(array_merge(
+            ['generated_at' => now()],
+            BackupCompare::diff($backup, $other)
+        ));
     }
 }

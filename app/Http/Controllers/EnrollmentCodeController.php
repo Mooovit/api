@@ -10,43 +10,19 @@ use Illuminate\Validation\ValidationException;
 class EnrollmentCodeController extends Controller
 {
     /**
-     * Hand-typeable alphabet for the code: 8 chars, no ambiguous glyphs
-     * (0/O, 1/I/L) — the code is typed by hand when scanning fails.
-     */
-    private const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-
-    /**
      * POST api/enrollment-codes (API-017) — mint a one-time enrollment code
      * for the calling user (any valid token may call this, the same sibling
      * rule as API-012). Codes live 15 minutes, are single-use, and the
-     * issuer's stale (used or expired) codes are pruned here — no scheduler.
+     * issuer's stale (used or expired) codes are pruned at mint — no
+     * scheduler. The mint (prune + code generation) lives on the model and
+     * is shared with the web devices page.
      *
      * @param Request $request
      * @return JsonResponse
      */
     public function store(Request $request): JsonResponse
     {
-        $user = $request->user();
-
-        /* Cheap cleanup of this issuer's stale rows at mint time */
-        EnrollmentCode::where('user_id', $user->id)
-            ->where(function ($query) {
-                $query->where('expires_at', '<=', now())
-                    ->orWhereNotNull('used_at');
-            })
-            ->delete();
-
-        do {
-            $code = collect(range(1, 8))
-                ->map(fn () => self::ALPHABET[random_int(0, strlen(self::ALPHABET) - 1)])
-                ->implode('');
-        } while (EnrollmentCode::where('code', $code)->exists());
-
-        $enrollmentCode = EnrollmentCode::create([
-            'code' => $code,
-            'user_id' => $user->id,
-            'expires_at' => now()->addMinutes(15),
-        ]);
+        $enrollmentCode = EnrollmentCode::mintFor($request->user());
 
         return response()->json([
             'code' => $enrollmentCode->code,

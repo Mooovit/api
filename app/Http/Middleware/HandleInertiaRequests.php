@@ -37,7 +37,14 @@ class HandleInertiaRequests extends Middleware
     public function share(Request $request)
     {
         return array_merge(parent::share($request), [
-            //
+            /* One-request flashes from the management UI: the plain-text
+               device token (shown exactly once), the freshly minted
+               enrollment code, and plain success notices. */
+            'flash' => fn () => [
+                'success' => $request->session()->get('success'),
+                'device_token' => $request->session()->get('device_token'),
+                'device_code' => $request->session()->get('device_code'),
+            ],
         ]);
     }
 }

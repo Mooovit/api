@@ -19,9 +19,9 @@ use Tests\TestCase;
  * not the live tables.
  *
  * Pinned semantics: identity = row id; fields compare as trimmed strings
- * (null ≡ empty). The dumps include soft-deleted tombstones (API-018), so
- * a soft-delete between backups surfaces as `changed` on `deleted_at`;
- * only rows that truly left the table are `removed`.
+ * (null ≡ empty). The dumps exclude soft-deleted rows (API-018), so a
+ * soft-delete between backups surfaces as `removed` — the row simply
+ * disappears from the target snapshot.
  */
 class BackupCompareTest extends TestCase
 {
@@ -86,7 +86,7 @@ class BackupCompareTest extends TestCase
         $move->update(['location_id' => $l2->id]);
 
         $gone->forceDelete(); /* truly leaves the table → removed */
-        $soft->delete(); /* tombstone stays → changed on deleted_at */
+        $soft->delete(); /* soft-deleted → excluded from the target dump → removed */
 
         $l3->delete();
         Label::create(['name' => 'New label', 'color' => '#00FF00', 'team_id' => $team->id]);
@@ -101,7 +101,7 @@ class BackupCompareTest extends TestCase
         /* Items */
         $items = $report['items'];
         $this->assertSame(
-            ['added' => 1, 'removed' => 1, 'changed' => 3, 'unchanged' => 1],
+            ['added' => 1, 'removed' => 2, 'changed' => 2, 'unchanged' => 1],
             $items['counts']
         );
 
@@ -110,6 +110,11 @@ class BackupCompareTest extends TestCase
         $this->assertSame($new->id, $items['added'][0]['id']);
         $this->assertSame($gone->id, $items['removed'][0]['id']);
         $this->assertSame('Gone', $items['removed'][0]['name']);
+        /* The soft-deleted item disappeared from the snapshot — the user
+           sees it leave, not a deleted_at field flip */
+        $removedIds = collect($items['removed'])->pluck('id')->all();
+        $this->assertContains($soft->id, $removedIds);
+        $this->assertNotContains($soft->id, collect($items['changed'])->pluck('id')->all());
 
         $changed = collect($items['changed'])->keyBy('id');
 
@@ -121,14 +126,8 @@ class BackupCompareTest extends TestCase
         $this->assertSame($l1->id, $moveDiff['location_id']['from']);
         $this->assertSame($l2->id, $moveDiff['location_id']['to']);
 
-        /* Tombstone: deleted_at '' → timestamp (other bumped columns like
-           updated_at may ride along in the diff, depending on whether the
-           timestamps straddle a second boundary) */
-        $softDiff = $changed[$soft->id]['diff'];
-        $this->assertSame('', $softDiff['deleted_at']['from']);
-        $this->assertNotSame('', $softDiff['deleted_at']['to']);
-
-        /* Locations: L2 added, L3 removed, L1 untouched */
+        /* Locations: L2 added, L3 removed (soft-delete → dump exclusion),
+           L1 untouched */
         $this->assertSame(
             ['added' => 1, 'removed' => 1, 'changed' => 0, 'unchanged' => 1],
             $report['locations']['counts']
