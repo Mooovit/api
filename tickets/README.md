@@ -70,6 +70,18 @@ tickets/
 | API-019  | — (user request: savepoints, Matthieu 2026-09)            | Backup comparison (added / removed / changed) |
 | API-020  | — (user request: savepoints, Matthieu 2026-09)            | Auto-backup schedules per team (daily/weekly/monthly/yearly) |
 | API-021  | — (user request: savepoints, Matthieu 2026-09)            | S3 offload for backups + bucket listing and rules display |
+| API-022  | — (user request: coverage audit, Matthieu 2026-09)        | Audit & complete API test coverage (every route in routes/api.php) |
+| API-023  | — (user request: invite access issues, Matthieu 2026-09)  | Team invitation acceptance — fix access after join + pin with tests |
+| API-024  | — (user request: public box links, Matthieu 2026-09)      | Public share links for boxes (magic-link token, share/deactivate API, read-only public page) |
+| API-025  | — (user request: kanban QR, Matthieu 2026-09)             | Kanban QR codes per item + public share-link visibility on the kanban page |
+| API-026  | — (user request: live activity, Matthieu 2026-09)         | Live activity panel pulls only new history since the revision moved |
+| API-027  | — (user request: deleted locations in history, Matthieu 2026-09) | Deleted statuses/locations stay resolvable — trashed rows in catalogue APIs, history names survive |
+| API-028  | — (user request: box uuid QR on details, Matthieu 2026-09) | Item details shows the box's identity QR (the item's uuid) on the kanban details modal |
+| API-029  | — (user request: server-side cold storage, Matthieu 2026-09) | Cold-storage backup sheet — the server prints the MV-135 QR backup (manifest + chunk frames, app-scannable) |
+| API-030  | — (user request: endpoint for the cold-storage backup, Matthieu 2026-09) | Cold-storage backup API — GET api/backups/cold-storage returns the MVBAK1 bundle as JSON |
+| API-031  | — (user request: the cold-storage route gives the PDF directly, Matthieu 2026-09) | Cold-storage backup PDF — GET api/backups/cold-storage/pdf renders the MVBAK1 sheet server-side (FPDF + pure-PHP QR) |
+| API-032  | — (client request: "pick contents", 2026-09; client side MV-138/MV-139) | Item picked state — temporary out-of-box (pick / unpick intent verbs on a nullable `items.picked_at`) |
+| API-033  | — (client request: `?since=` re-delivered same-second rows forever; app side MV-150) | Item delta keyed by team revision — `GET api/item?since_revision=N` over the `items.sync_revision` stamp |
 
 Numbering follows the *Suggested order* in server.md (small wins first, then
 the sync work, then operational features); API-013..021 are appended by

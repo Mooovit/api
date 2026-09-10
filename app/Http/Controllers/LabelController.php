@@ -148,8 +148,9 @@ class LabelController extends Controller
 
         $item->labels()->attach($data['label_id']);
 
-        /* Pivot writes fire no model events — bump the team revision explicitly (API-003) */
-        TeamRevision::bump($item);
+        /* Pivot writes fire no model events — bump the team revision and
+           stamp the item (API-003 + API-033) */
+        TeamRevision::bumpAndStamp($item);
 
         return response()->json([
             'success' => true,
@@ -184,8 +185,9 @@ class LabelController extends Controller
 
         $item->labels()->detach($label->id);
 
-        /* Pivot writes fire no model events — bump the team revision explicitly (API-003) */
-        TeamRevision::bump($item);
+        /* Pivot writes fire no model events — bump the team revision and
+           stamp the item (API-003 + API-033) */
+        TeamRevision::bumpAndStamp($item);
 
         return response()->json([
             'success' => true,

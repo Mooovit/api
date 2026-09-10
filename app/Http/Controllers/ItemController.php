@@ -14,7 +14,9 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
+use App\Support\TeamRevision;
 
 class ItemController extends Controller
 {
@@ -55,7 +57,11 @@ class ItemController extends Controller
      */
     private function recordItemChanges(Item $item, array $data, $user, bool $onlyPresentKeys = false)
     {
-        $trackableFields = ['name', 'location_id', 'status_id', 'parent_id'];
+        /* picked_at (API-032): the datetime cast hands back Carbon objects,
+           so `!==` compares object identity — every pick/unpick that changes
+           the state records a row (re-pick refreshes the timestamp with a
+           new row), while a no-op unpick (null -> null) records nothing. */
+        $trackableFields = ['name', 'location_id', 'status_id', 'parent_id', 'picked_at'];
 
         foreach ($trackableFields as $field) {
             $present = $onlyPresentKeys ? array_key_exists($field, $data) : isset($data[$field]);
@@ -180,8 +186,10 @@ class ItemController extends Controller
         $this->authorizeIntentVerb($request, $item);
 
         $data = $request->validate([
-            'status_id' => 'required|string|exists:statuses,id',
-            'location_id' => 'required|string|exists:locations,id',
+            /* API-027: trashed-EXPLICIT exists — a deleted status/location
+               id is a 422 (plain exists is scope-blind) */
+            'status_id' => ['required', 'string', Rule::exists('statuses', 'id')->whereNull('deleted_at')],
+            'location_id' => ['required', 'string', Rule::exists('locations', 'id')->whereNull('deleted_at')],
         ]);
 
         $this->checkParents($item->team_id, $data);
@@ -212,6 +220,54 @@ class ItemController extends Controller
         ]);
 
         return DB::transaction(function () use ($item, $data, $request) {
+            $this->recordItemChanges($item, $data, $request->user(), true);
+            $item->update($data);
+            return $item->refresh();
+        });
+    }
+
+    /**
+     * POST api/item/{item}/pick — mark the item as TEMPORARILY out of its
+     * box (API-032). Touches only picked_at (set to now()); body-less.
+     * Containment (parent_id) is unchanged — this is the "temporary pick,
+     * I'll put it back later" state. Re-picking an already-picked item
+     * refreshes the timestamp (one history row per call).
+     *
+     * @param Request $request
+     * @param Item $item
+     * @return Item
+     * @throws AuthorizationException
+     */
+    public function pick(Request $request, Item $item): Item
+    {
+        $this->authorizeIntentVerb($request, $item);
+
+        return DB::transaction(function () use ($item, $request) {
+            $data = ['picked_at' => now()];
+            $this->recordItemChanges($item, $data, $request->user(), true);
+            $item->update($data);
+            return $item->refresh();
+        });
+    }
+
+    /**
+     * POST api/item/{item}/unpick — put the item back (API-032): clears
+     * picked_at. Unpicking an item that was never picked saves nothing
+     * (no history row, updated_at unchanged — the rename same-value rule;
+     * the `updated` event only fires on real changes, so no revision bump
+     * either).
+     *
+     * @param Request $request
+     * @param Item $item
+     * @return Item
+     * @throws AuthorizationException
+     */
+    public function unpick(Request $request, Item $item): Item
+    {
+        $this->authorizeIntentVerb($request, $item);
+
+        return DB::transaction(function () use ($item, $request) {
+            $data = ['picked_at' => null];
             $this->recordItemChanges($item, $data, $request->user(), true);
             $item->update($data);
             return $item->refresh();
@@ -404,9 +460,19 @@ class ItemController extends Controller
             ItemBarcode::whereIn('item_id', $ids)->update(['team_id' => $destination->id]);
             Attachment::whereIn('item_id', $ids)->update(['team_id' => $destination->id]);
 
+            /* API-003 bump on BOTH teams — the source's bump is how its
+               clients learn something left (the rows themselves no longer
+               match the source's team scope in delta pulls). The destination
+               bump doubles as the API-033 stamp source: every transferred
+               row carries the destination's post-increment counter, so its
+               next `since_revision` delta delivers the subtree. */
+            Team::whereKey($oldTeamId)->increment('revision');
+            $stamp = TeamRevision::nextForId($destination->id);
+
             Item::whereIn('id', $ids)->update([
                 'team_id' => $destination->id,
                 'updated_at' => $transferredAt,
+                'sync_revision' => $stamp,
             ]);
             /* Root only: detach from the source-team parent + optional
                destination location/status. */
@@ -414,13 +480,8 @@ class ItemController extends Controller
                 'parent_id' => null,
                 'location_id' => $locationId ?? $item->location_id,
                 'status_id' => $statusId ?? $item->status_id,
+                'sync_revision' => $stamp,
             ]);
-
-            /* API-003 bump on BOTH teams — the source's bump is how its
-               clients learn something left (the rows themselves no longer
-               match the source's team scope in delta pulls). */
-            Team::whereKey($oldTeamId)->increment('revision');
-            Team::whereKey($destination->id)->increment('revision');
 
             return [$detachedParent, $detachedLabelIds];
         });
@@ -487,9 +548,12 @@ class ItemController extends Controller
 
         $appliedAt = now();
         $results = [];
-        $touchedTeamIds = [];
+        /* API-033: one stamp per touched team — the first successful row of
+           a team takes the post-increment counter, every row of that batch
+           carries it (one logical write = one bump = one stamp value). */
+        $stampsByTeamId = [];
 
-        DB::transaction(function () use ($user, $ids, $parent, $parentId, $parentInBatch, $appliedAt, &$results, &$touchedTeamIds) {
+        DB::transaction(function () use ($user, $ids, $parent, $parentId, $parentInBatch, $appliedAt, &$results, &$stampsByTeamId) {
             foreach ($ids as $id) {
                 $item = Item::find($id);
 
@@ -510,18 +574,16 @@ class ItemController extends Controller
                 }
 
                 $this->recordItemChanges($item, ['parent_id' => $parentId], $user, true);
-                /* Mass update: fires no model events (no per-item bump). */
+                /* Mass update: fires no model events (no per-item bump) —
+                   the stamp below is the delta cursor (API-033). */
+                $stamp = $stampsByTeamId[$item->team_id]
+                    ??= TeamRevision::nextForId($item->team_id);
                 Item::whereKey($item->id)->update([
                     'parent_id' => $parentId,
                     'updated_at' => $appliedAt,
+                    'sync_revision' => $stamp,
                 ]);
-                $touchedTeamIds[$item->team_id] = true;
                 $results[] = ['id' => $id, 'ok' => true, 'updated_at' => $appliedAt];
-            }
-
-            if ($touchedTeamIds) {
-                /* API-003 bump, once per request per affected team. */
-                Team::whereIn('id', array_keys($touchedTeamIds))->increment('revision');
             }
         });
 
@@ -547,8 +609,11 @@ class ItemController extends Controller
         $data = $request->validate([
             'ids' => 'required|array|min:1|max:500',
             'ids.*' => 'string|distinct',
-            'status_id' => 'required|string|exists:statuses,id',
-            'location_id' => 'required|string|exists:locations,id',
+            /* API-027: trashed-EXPLICIT exists — a deleted status/location
+               id is a 422 (plain exists is scope-blind; bulk-assign used to
+               die on a confusing 404 from the findOrFail below instead) */
+            'status_id' => ['required', 'string', Rule::exists('statuses', 'id')->whereNull('deleted_at')],
+            'location_id' => ['required', 'string', Rule::exists('locations', 'id')->whereNull('deleted_at')],
         ]);
 
         $status = Status::findOrFail($data['status_id']);
@@ -561,9 +626,10 @@ class ItemController extends Controller
 
         $appliedAt = now();
         $results = [];
-        $touchedTeamIds = [];
+        /* API-033: one stamp per touched team, as in bulk-move. */
+        $stampsByTeamId = [];
 
-        DB::transaction(function () use ($user, $data, $status, $location, $appliedAt, &$results, &$touchedTeamIds) {
+        DB::transaction(function () use ($user, $data, $status, $location, $appliedAt, &$results, &$stampsByTeamId) {
             foreach ($data['ids'] as $id) {
                 $item = Item::find($id);
 
@@ -587,19 +653,17 @@ class ItemController extends Controller
                     $user,
                     true
                 );
-                /* Mass update: fires no model events (no per-item bump). */
+                /* Mass update: fires no model events (no per-item bump) —
+                   the stamp below is the delta cursor (API-033). */
+                $stamp = $stampsByTeamId[$item->team_id]
+                    ??= TeamRevision::nextForId($item->team_id);
                 Item::whereKey($item->id)->update([
                     'status_id' => $status->id,
                     'location_id' => $location->id,
                     'updated_at' => $appliedAt,
+                    'sync_revision' => $stamp,
                 ]);
-                $touchedTeamIds[$item->team_id] = true;
                 $results[] = ['id' => $id, 'ok' => true, 'updated_at' => $appliedAt];
-            }
-
-            if ($touchedTeamIds) {
-                /* API-003 bump, once per request per affected team. */
-                Team::whereIn('id', array_keys($touchedTeamIds))->increment('revision');
             }
         });
 
@@ -622,6 +686,12 @@ class ItemController extends Controller
      * precision — clients pair this with the API-003 revision counter and
      * re-pull when it moves.
      *
+     * API-033 revision-keyed delta: with `?since_revision=N` the same
+     * `{ changed, deleted_ids }` envelope keys on `items.sync_revision`
+     * (the post-increment team counter stamped on every write) — exact
+     * windows with no timestamp precision, current revision in the
+     * X-Revision header. `?since=` stays for older clients.
+     *
      * @param Request $request
      * @return JsonResponse
      * @throws AuthorizationException
@@ -639,8 +709,32 @@ class ItemController extends Controller
             throw new AuthorizationException();
         }
 
-        /* Delta feed — strict `>`: the client remembers the max updated_at
-           it saw. Tombstones surface only in `deleted_ids`. */
+        /* API-033 revision-keyed delta — `since_revision` is checked first
+           (a client sending both wants the counter window). Rows carry the
+           post-increment team counter as `sync_revision` (stamped on every
+           app-representation write), so the window is exact — no timestamp
+           precision, no re-delivery; bump-only writes (barcodes, uploads)
+           answer empty and still advance the cursor through X-Revision.
+           Tombstones key on their own last stamp. */
+        if ($request->filled('since_revision')) {
+            $request->validate(['since_revision' => ['integer', 'min:0']]);
+            $sinceRevision = (int) $request->input('since_revision');
+
+            return response()
+                ->json([
+                    'changed' => Item::where('team_id', $team->id)
+                        ->where('sync_revision', '>', $sinceRevision)
+                        ->get(),
+                    'deleted_ids' => Item::onlyTrashed()
+                        ->where('team_id', $team->id)
+                        ->where('sync_revision', '>', $sinceRevision)
+                        ->pluck('id'),
+                ])
+                ->header('X-Revision', (string) $team->revision);
+        }
+
+        /* Timestamp delta (API-006) — kept unchanged for older clients
+           (API-033 deprecates it later, once no client sends it). */
         if ($request->filled('since')) {
             $request->validate(['since' => 'date']);
             $since = $request->date('since');
@@ -675,8 +769,10 @@ class ItemController extends Controller
         $data = $request->validate([
             "name" => "required|string",
             "team_id" => "required|string",
-            "location_id" => "required|string|exists:locations,id",
-            "status_id" => "required|string|exists:statuses,id",
+            /* API-027: trashed-EXPLICIT exists — a deleted status/location
+               id is a 422 (plain exists is scope-blind) */
+            "location_id" => ["required", "string", Rule::exists('locations', 'id')->whereNull('deleted_at')],
+            "status_id" => ["required", "string", Rule::exists('statuses', 'id')->whereNull('deleted_at')],
             "parent_id" => "nullable|string|exists:items,id"
         ]);
 
@@ -759,8 +855,10 @@ class ItemController extends Controller
 
         $data = $request->validate([
             "name" => "string",
-            "location_id" => "string|exists:locations,id",
-            "status_id" => "string|exists:statuses,id",
+            /* API-027: trashed-EXPLICIT exists — a deleted status/location
+               id is a 422 (plain exists is scope-blind) */
+            "location_id" => ["string", Rule::exists('locations', 'id')->whereNull('deleted_at')],
+            "status_id" => ["string", Rule::exists('statuses', 'id')->whereNull('deleted_at')],
             "parent_id" => "nullable|string|exists:items,id",
         ]);
 
@@ -782,9 +880,10 @@ class ItemController extends Controller
      * child (`parent_id: <box id> -> null`), everything in one transaction.
      * Grandchildren are untouched (they keep their own parents); trashed
      * children are never modified (the soft-delete scope skips them). The
-     * `deleted` event bumps the team revision once (API-003 observer); the
-     * mass detach fires no events but does bump the children's `updated_at`,
-     * so API-006 deltas report them as changed.
+     * mass detach fires no events but stamps the children (API-033) with
+     * one counter bump; the trashed row itself gets its own bump + stamp
+     * from the observer's `deleted` event (API-003), so revision-keyed
+     * deltas report the children as `changed` and the box in `deleted_ids`.
      *
      * @param Request $request
      * @param Item $item
@@ -817,11 +916,17 @@ class ItemController extends Controller
                 ]);
             }
 
-            /* Mass update: no model events, one query for the whole detach */
+            /* Mass update: no model events, one query for the whole detach.
+               API-033: the detached children are stamped too (their app
+               representation changed — the re-parent), each batch of rows
+               carrying the post-increment counter this write contributes;
+               the trashed row itself is stamped by the observer's deleted
+               event (one more bump). */
             if ($children->isNotEmpty()) {
                 Item::where('parent_id', $item->id)->update([
                     'parent_id' => null,
                     'updated_at' => $detachedAt,
+                    'sync_revision' => TeamRevision::nextForId($item->team_id),
                 ]);
             }
 

@@ -2,15 +2,21 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Attachment;
 use App\Models\History;
 use App\Models\Item;
+use App\Models\ItemBarcode;
 use App\Models\Label;
 use App\Models\Location;
 use App\Models\Status;
+use App\Support\ItemShare;
+use App\Support\TeamRevision;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Validation\Rule;
 
 class KanbanController extends Controller
 {
@@ -35,13 +41,39 @@ class KanbanController extends Controller
     }
 
     /**
+     * The board row shape shared by the server-rendered board (index) and
+     * the delta feed — the JS applies delta rows with the same renderer.
+     */
+    private function boardRow(Item $item): array
+    {
+        return [
+            "id" => $item->id,
+            "title" => $item->name,
+            "status_id" => $item->status_id,
+            "location_id" => $item->location_id,
+            "parent_id" => $item->parent_id,
+            "status_name" => $item->status ? $item->status->name : null,
+            "location_name" => $item->location ? $item->location->name : null,
+            "labels" => $item->labels->map(function ($label) {
+                return [
+                    'id' => $label->id,
+                    'name' => $label->name,
+                    'color' => $label->color,
+                    'text_color' => $this->getTextColor($label->color)
+                ];
+            })->toArray(),
+            "updated_at" => $item->updated_at->toISOString(),
+        ];
+    }
+
+    /**
      * Display the kanban board view
      */
     public function index(Request $request, string $type)
     {
         $user = $request->user();
         $team_id = $user->current_team_id;
-        
+
         switch ($type) {
             default:
             case "status":
@@ -52,28 +84,19 @@ class KanbanController extends Controller
                 break;
         }
 
+        /* API-027: the CARD payloads keep a deleted status/location's name
+           (nested trashed-inclusive eager loads); the board's own column
+           query above stays default-scoped — a deleted column vanishes. */
         $jsonData = [];
-        foreach($query['model']::where(["team_id" => $team_id])->with('items.status', 'items.location', 'items.labels')->get() as $instance) {
+        foreach($query['model']::where(["team_id" => $team_id])->with([
+            'items.status' => fn ($q) => $q->withTrashed(),
+            'items.location' => fn ($q) => $q->withTrashed(),
+            'items.labels',
+        ])->get() as $instance) {
             $boardItem = [];
             foreach($instance->items as $item) {
                 if(!$item->parent_id) {
-                    array_push($boardItem, [
-                        "id" => $item->id,
-                        "title" => $item->name,
-                        "status_id" => $item->status_id,
-                        "location_id" => $item->location_id,
-                        "parent_id" => $item->parent_id,
-                        "status_name" => $item->status ? $item->status->name : null,
-                        "location_name" => $item->location ? $item->location->name : null,
-                        "labels" => $item->labels->map(function($label) {
-                            return [
-                                'id' => $label->id,
-                                'name' => $label->name,
-                                'color' => $label->color,
-                                'text_color' => $this->getTextColor($label->color)
-                            ];
-                        })->toArray()
-                    ]);
+                    array_push($boardItem, $this->boardRow($item));
                 }
             }
             array_push($jsonData, [
@@ -99,8 +122,62 @@ class KanbanController extends Controller
 
         // Convert jsonData to JSON string for the view
         $jsonData = json_encode($jsonData);
-        
-        return view('kanban', compact('jsonData', 'query', 'type', 'recentHistory', 'statuses', 'locations', 'labels', 'user'));
+
+        /* API-003: the JS live view polls this counter (see revision/delta) */
+        $revision = (int) \App\Models\Team::whereKey($team_id)->value('revision');
+
+        return view('kanban', compact('jsonData', 'query', 'type', 'recentHistory', 'statuses', 'locations', 'labels', 'user', 'revision'))
+            ->with('builtAt', now());
+    }
+
+    /**
+     * GET /kanban/revision — the team's change counter (API-003, session
+     * flavor for the kanban live view). The JS polls this every few seconds
+     * and only pulls the delta feed when the integer actually moved.
+     */
+    public function revision(Request $request): JsonResponse
+    {
+        $revision = (int) \App\Models\Team::whereKey($request->user()->current_team_id)->value('revision');
+
+        return response()->json(['revision' => $revision]);
+    }
+
+    /**
+     * GET /kanban/delta?since=<ISO-8601> — everything that changed in the
+     * team since `since` (API-006, session flavor): `changed` holds full
+     * board rows (same shape as the server-rendered board, children
+     * included — the JS drops them), `deleted_ids` the team-scoped ids
+     * soft-deleted after `since`, plus the current `revision`.
+     */
+    public function delta(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'since' => 'required|date',
+        ]);
+        $since = $request->date('since');
+        $team_id = $request->user()->current_team_id;
+
+        /* API-027: status/location eager loads are trashed-inclusive —
+           delta rows keep the deleted row's NAME */
+        $changed = Item::with([
+            'status' => fn ($q) => $q->withTrashed(),
+            'location' => fn ($q) => $q->withTrashed(),
+            'labels',
+        ])
+            ->where('team_id', $team_id)
+            ->where('updated_at', '>', $since)
+            ->get()
+            ->map(fn (Item $item) => $this->boardRow($item))
+            ->values();
+
+        return response()->json([
+            'changed' => $changed,
+            'deleted_ids' => Item::onlyTrashed()
+                ->where('team_id', $team_id)
+                ->where('deleted_at', '>', $since)
+                ->pluck('id'),
+            'revision' => (int) \App\Models\Team::whereKey($team_id)->value('revision'),
+        ]);
     }
 
     /**
@@ -121,8 +198,10 @@ class KanbanController extends Controller
         ->get();
 
         // Get all statuses, locations, and labels for name resolution
-        $statuses = Status::where('team_id', $team_id)->pluck('name', 'id');
-        $locations = Location::where('team_id', $team_id)->pluck('name', 'id');
+        // (API-027: status/location plucks are trashed-inclusive so feed
+        // rows referencing a deleted catalogue row keep a NAME)
+        $statuses = Status::where('team_id', $team_id)->withTrashed()->pluck('name', 'id');
+        $locations = Location::where('team_id', $team_id)->withTrashed()->pluck('name', 'id');
         $labels = Label::where('team_id', $team_id)->pluck('name', 'id');
 
         // Enhance history with resolved names
@@ -142,7 +221,12 @@ class KanbanController extends Controller
     {
         $user = $request->user();
         
-        $item = Item::with(['histories.user', 'team', 'parent', 'status', 'location', 'labels'])
+        /* API-027: status/location eager loads are trashed-inclusive — the
+           details payload keeps a deleted row's NAME */
+        $item = Item::with(['histories.user', 'team', 'parent',
+            'status' => fn ($q) => $q->withTrashed(),
+            'location' => fn ($q) => $q->withTrashed(),
+            'labels', 'barcodes'])
             ->where('id', $itemId)
             ->where('team_id', $user->current_team_id)
             ->first();
@@ -161,6 +245,11 @@ class KanbanController extends Controller
         // Get children items
         $children = Item::where('parent_id', $item->id)->get();
 
+        /* API-013: attachments as metadata only (raw rows carry the
+           storage path, which must not be serialized) */
+        $item->setRelation('attachments',
+            $item->attachments()->get()->map(fn ($attachment) => $attachment->metadata())->values());
+
         // Get item history with resolved names
         $history = $item->histories()
             ->with('user')
@@ -177,7 +266,10 @@ class KanbanController extends Controller
         return response()->json([
             'item' => $item,
             'children' => $children,
-            'history' => $history
+            'history' => $history,
+            /* API-025: current public share-link state (additive field) —
+               the details modal renders it directly, no extra round-trip */
+            'share' => ItemShare::state($item),
         ]);
     }
 
@@ -186,10 +278,13 @@ class KanbanController extends Controller
      */
     public function updateItemByBarcode(Request $request): JsonResponse
     {
+        /* API-027: the exists layer is trashed-EXPLICIT — a deleted
+           status/location id is a 422 (the validator's plain exists is
+           scope-blind and would silently accept tombstoned ids) */
         $data = $request->validate([
             'item_id' => 'required|string|exists:items,id',
-            'status_id' => 'nullable|string|exists:statuses,id',
-            'location_id' => 'nullable|string|exists:locations,id',
+            'status_id' => ['nullable', 'string', Rule::exists('statuses', 'id')->whereNull('deleted_at')],
+            'location_id' => ['nullable', 'string', Rule::exists('locations', 'id')->whereNull('deleted_at')],
         ]);
 
         $user = $request->user();
@@ -247,14 +342,33 @@ class KanbanController extends Controller
     }
 
     /**
-     * Get recent history for dashboard
+     * GET /kanban/history — the Live panel's recent team activity.
+     *
+     * API-026: optional incremental mode via the `after` datetime cursor.
+     * Legacy parity: NO `after` → the bare enhanced-rows array (unchanged
+     * shape). WITH `after` → `{data: [...], cursor: "..."}` where `data`
+     * holds rows with `changed_at >= after` (INCLUSIVE cursor: rows sharing
+     * the cursor's timestamp are re-delivered — bounded, deduped client-side
+     * by id; this is the sanctioned simple tie-handling, ticket API-026) and
+     * `cursor` is the max `changed_at` of the returned set (or the request
+     * cursor when empty) so the client can chain blindly. Team scoping and
+     * the 50-row cap are unchanged.
      */
     public function getRecentHistory(Request $request): JsonResponse
     {
+        $validated = $request->validate([
+            'after' => ['nullable', 'date'],
+        ]);
+
         $user = $request->user();
-        
+
         $history = History::whereHas('item', function($query) use ($user) {
             $query->where('team_id', $user->current_team_id);
+        })
+        ->when($validated['after'] ?? null, function ($query, $after) {
+            /* >= — inclusive cursor: same-timestamp rows are re-delivered
+               and deduped by the client (rows are append-only, ids stable) */
+            $query->where('changed_at', '>=', Carbon::parse($after));
         })
         ->with(['item', 'user'])
         ->orderBy('changed_at', 'desc')
@@ -262,8 +376,10 @@ class KanbanController extends Controller
         ->get();
 
         // Get all statuses, locations, and labels for name resolution
-        $statuses = Status::where('team_id', $user->current_team_id)->pluck('name', 'id');
-        $locations = Location::where('team_id', $user->current_team_id)->pluck('name', 'id');
+        // (API-027: status/location plucks are trashed-inclusive so feed
+        // rows referencing a deleted catalogue row keep a NAME)
+        $statuses = Status::where('team_id', $user->current_team_id)->withTrashed()->pluck('name', 'id');
+        $locations = Location::where('team_id', $user->current_team_id)->withTrashed()->pluck('name', 'id');
         $labels = Label::where('team_id', $user->current_team_id)->pluck('name', 'id');
 
         // Enhance history with resolved names
@@ -273,7 +389,20 @@ class KanbanController extends Controller
             return $change;
         });
 
-        return response()->json($enhancedHistory);
+        /* Legacy shape stays byte-compatible; the cursor envelope only
+           appears in incremental mode */
+        if (blank($validated['after'] ?? null)) {
+            return response()->json($enhancedHistory);
+        }
+
+        $cursor = $enhancedHistory->max('changed_at');
+
+        return response()->json([
+            'data' => $enhancedHistory->values(),
+            'cursor' => $cursor
+                ? $cursor->toISOString()
+                : Carbon::parse($validated['after'])->toISOString(),
+        ]);
     }
 
     /**
@@ -436,7 +565,12 @@ class KanbanController extends Controller
     }
 
     /**
-     * Resolve field values to human-readable names
+     * Resolve field values to human-readable names.
+     *
+     * API-027: lookups are trashed-INCLUSIVE — a status/location/parent
+     * deleted AFTER the history row was written still resolves to its NAME
+     * (history must stay readable); the row falls back to the raw value only
+     * when nothing was ever found.
      */
     private function resolveValueToName(string $fieldName, ?string $value): ?string
     {
@@ -446,17 +580,17 @@ class KanbanController extends Controller
 
         switch ($fieldName) {
             case 'status_id':
-                $status = Status::find($value);
+                $status = Status::withTrashed()->find($value);
                 return $status ? $status->name : $value;
-            
+
             case 'location_id':
-                $location = Location::find($value);
+                $location = Location::withTrashed()->find($value);
                 return $location ? $location->name : $value;
-            
+
             case 'parent_id':
-                $parent = Item::find($value);
+                $parent = Item::withTrashed()->find($value);
                 return $parent ? $parent->name : $value;
-            
+
             default:
                 return $value;
         }
@@ -473,10 +607,14 @@ class KanbanController extends Controller
 
         if (empty($query)) {
             // If no query, return all items for filter view
-            $itemsQuery = Item::with(['status', 'location', 'parent', 'labels'])
+            /* API-027: status/location trashed-inclusive — results keep a
+               deleted row's NAME */
+            $itemsQuery = Item::with(['status' => fn ($q) => $q->withTrashed(),
+                'location' => fn ($q) => $q->withTrashed(), 'parent', 'labels'])
                 ->where('team_id', $user->current_team_id);
         } else {
-            $itemsQuery = Item::with(['status', 'location', 'parent', 'labels'])
+            $itemsQuery = Item::with(['status' => fn ($q) => $q->withTrashed(),
+                'location' => fn ($q) => $q->withTrashed(), 'parent', 'labels'])
                 ->where('team_id', $user->current_team_id)
                 ->where(function($q) use ($query) {
                     $q->where('name', 'LIKE', "%{$query}%")
@@ -631,6 +769,11 @@ class KanbanController extends Controller
 
         $item->labels()->attach($data['label_id']);
 
+        /* Pivot writes fire no model events — bump the team revision and
+           stamp the item (API-003 + API-033) so live boards re-pull the row
+           and revision-keyed deltas deliver it */
+        TeamRevision::bumpAndStamp($item);
+
         return response()->json([
             'success' => true,
             'item' => $item->fresh(['labels'])
@@ -659,9 +802,147 @@ class KanbanController extends Controller
 
         $item->labels()->detach($labelId);
 
+        /* Pivot writes fire no model events — bump the team revision and
+           stamp the item (API-003 + API-033) so live boards re-pull the row
+           and revision-keyed deltas deliver it */
+        TeamRevision::bumpAndStamp($item);
+
         return response()->json([
             'success' => true,
             'item' => $item->fresh(['labels'])
         ]);
+    }
+
+    /**
+     * POST /kanban/item/{itemId}/barcodes — attach a scanned code (API-011,
+     * session flavor for the item-details modal). Codes are stored verbatim,
+     * whitespace-trimmed and case-sensitive; uniqueness is team-scoped → 409
+     * on duplicate, including codes held by soft-deleted items of the same
+     * team. Registry writes bump the team revision once but leave the item
+     * row's `updated_at` alone (deltas carry no body for it).
+     */
+    public function attachBarcode(Request $request, string $itemId): JsonResponse
+    {
+        $user = $request->user();
+        $item = Item::where('id', $itemId)
+            ->where('team_id', $user->current_team_id)
+            ->firstOrFail();
+
+        if (!$user->hasTeamPermission($item->team, 'item:write') ||
+            !$user->tokenCan('item:write')
+        ) {
+            throw new AuthorizationException();
+        }
+
+        $data = $request->validate([
+            'code' => 'required|string|max:191',
+            'type' => 'nullable|string|max:191',
+        ]);
+
+        $code = trim($data['code']);
+
+        if (ItemBarcode::where('team_id', $item->team_id)->where('code', $code)->exists()) {
+            return response()->json(['error' => 'Code already registered in this team'], 409);
+        }
+
+        $barcode = ItemBarcode::create([
+            'item_id' => $item->id,
+            'team_id' => $item->team_id,
+            'code' => $code,
+            'type' => $data['type'] ?? null,
+        ]);
+
+        /* Registry rows fire no revision observer — bump explicitly (API-003) */
+        TeamRevision::bump($barcode);
+
+        return response()->json([
+            'success' => true,
+            'item' => $item->fresh(['barcodes']),
+        ], 201);
+    }
+
+    /**
+     * DELETE /kanban/item/{itemId}/barcodes/{barcode} — detach a code
+     * (API-011, session flavor). `{barcode}` is the barcode row id; a raw
+     * code is also accepted. The row must belong to the item, else 404.
+     */
+    public function detachBarcode(Request $request, string $itemId, string $barcode): JsonResponse
+    {
+        $user = $request->user();
+        $item = Item::where('id', $itemId)
+            ->where('team_id', $user->current_team_id)
+            ->firstOrFail();
+
+        if (!$user->hasTeamPermission($item->team, 'item:write') ||
+            !$user->tokenCan('item:write')
+        ) {
+            throw new AuthorizationException();
+        }
+
+        $row = $item->barcodes()->whereKey($barcode)->first()
+            ?? $item->barcodes()->where('code', $barcode)->firstOrFail();
+
+        $row->delete();
+
+        /* Registry rows fire no revision observer — bump explicitly (API-003) */
+        TeamRevision::bump($item);
+
+        return response()->json([
+            'success' => true,
+            'item' => $item->fresh(['barcodes']),
+        ]);
+    }
+
+    /**
+     * POST /kanban/item/{itemId}/share — activate (or re-activate) the
+     * item's public share link (API-024, session flavor for the kanban page —
+     * it cannot call /api/*, which has no session-cookie stateful group).
+     * Team-scoped (404 on foreign items), item:write-gated; semantics
+     * (idempotency, fresh token on re-issue, revision bumps) live in
+     * App\Support\ItemShare, shared with the API flavor. 201 on the first
+     * activation, 200 on re-activation.
+     */
+    public function shareItem(Request $request, string $itemId): JsonResponse
+    {
+        $user = $request->user();
+        $item = Item::where('id', $itemId)
+            ->where('team_id', $user->current_team_id)
+            ->firstOrFail();
+
+        if (!$user->hasTeamPermission($item->team, 'item:write') ||
+            !$user->tokenCan('item:write')
+        ) {
+            throw new AuthorizationException();
+        }
+
+        $result = ItemShare::activate($item);
+
+        return response()->json([
+            'success' => true,
+            'share' => $result['payload'],
+        ], $result['created'] ? 201 : 200);
+    }
+
+    /**
+     * DELETE /kanban/item/{itemId}/share — revoke the item's public share
+     * link (API-024/025, session flavor). Idempotent; the public URL dies
+     * immediately. Team-scoped + item:write-gated like shareItem.
+     */
+    public function unshareItem(Request $request, string $itemId): JsonResponse
+    {
+        $user = $request->user();
+        $item = Item::where('id', $itemId)
+            ->where('team_id', $user->current_team_id)
+            ->firstOrFail();
+
+        if (!$user->hasTeamPermission($item->team, 'item:write') ||
+            !$user->tokenCan('item:write')
+        ) {
+            throw new AuthorizationException();
+        }
+
+        ItemShare::revoke($item);
+
+        return response()->json(['success' => true]);
     }
 }

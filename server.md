@@ -42,6 +42,24 @@ web SPA ignores extra fields.
 
 ## 2. Delta sync: `?since=` + deletions feed
 
+> **Implemented (2026-09, API-033)** — `GET api/item?since_revision=N` keys the
+> delta on the team revision counter instead of a timestamp: `items.sync_revision`
+> (nullable bigint) carries the post-increment counter stamped on every write that
+> changes an item's app-representation — create / full update / move / assign /
+> rename / pick / unpick (when they actually mutate) / label attach + detach /
+> soft delete / restore, plus side-effect re-parents (delete-detach, transfer
+> subtree — the destination team's counter). Barcode + attachment writes bump the
+> counter but stamp nothing: the delta answers `{changed: [], deleted_ids: []}`
+> and the client advances its cursor through `X-Revision`. Envelope identical to
+> the timestamp delta; current counter in `X-Revision` (one round-trip cursor
+> convergence, also for empty deltas); `?since_revision=abc|1.5|-1` → 422;
+> `?since_revision=<current>` → empty 200; `?since_revision=0` = full pull; a
+> restore re-delivers the row; the column never serializes (`$hidden`). Backfill
+> migration stamps pre-existing rows (live + trashed) with their team's counter
+> so first-use cursors cannot strand them. Supersedes `?since=` (kept unchanged
+> for older clients — deprecate once no client sends it). Pinned by
+> `tests/Feature/ItemRevisionDeltaTest.php`.
+
 > **Implemented (2026-09, API-006)** — `GET api/item?since=<ISO-8601>` returns
 > `{"changed": [...], "deleted_ids": [...]}`: full rows (same shape as the plain
 > list) with `updated_at > since` (creations included, tombstones excluded — a
@@ -50,7 +68,10 @@ web SPA ignores extra fields.
 > `X-Revision` rides on both shapes; garbage `since` → 422. Timestamps have
 > second precision — pair with the API-003 counter and re-pull when it moves.
 > Pinned by `tests/Feature/ItemDeltaSyncTest.php`. Status/location/labels delta
-> stays out of scope (tiny tables).
+> stays out of scope (tiny tables). **Superseded by `?since_revision=` (API-033):
+> rows sharing the cursor's second were re-delivered forever — same-second batch
+> writes made the timestamp cursor un-advancable; the counter has no such
+> precision problem.**
 
 > **Prerequisite done (2026-09, API-005)** — items are now **soft-deleted**
 > (`items.deleted_at` + index, `SoftDeletes` on the model). Deletions survive as
@@ -119,6 +140,16 @@ turns that into 50 chances to fail.
 > *already sparse* (only sent fields applied, history only for real changes) — pinned by
 > `ItemApiTest` — so both paths are safe against sibling clobbering. `If-Match`
 > preconditions remain future work.
+>
+> **Extended (2026-09, API-032)** — picked state for the client's "pick contents"
+> feature: a nullable `items.picked_at` timestamp (null = in box) marks an item as
+> TEMPORARILY out of its box without touching `parent_id`. Body-less verb pair:
+> `POST api/item/{item}/pick` (sets `picked_at = now()`, re-pick refreshes with a new
+> history row) and `POST api/item/{item}/unpick` (clears it; a no-op unpick — item
+> was never picked — writes no history and bumps neither `updated_at` nor the
+> revision). One `picked_at` history row per effective change; serialization rides
+> the normal item payloads (`index`/`show`/delta) as ISO-8601 via the model cast.
+> Pinned by `tests/Feature/ItemPickStateTest.php`.
 
 **Why** — `PATCH api/item/:id` semantics are "the full item object with the
 modified field(s)". Two clients editing the same item concurrently
@@ -269,6 +300,10 @@ collides with another item's id.
 > bumped atomically on every team-scoped write — items/statuses/locations/labels CRUD
 > (observers) and label attach/detach (explicit, pivot writes fire no model events).
 > No-op writes (nothing dirty) do not bump. Pinned by `tests/Feature/RevisionApiTest.php`.
+> API-033 doubles the counter as the delta cursor: item writes also stamp the touched
+> rows with the post-increment value (`TeamRevision::bumpAndGet`/`nextForId` +
+> `items.sync_revision` — see §2); bulk ops/transfer stamp via their mass updates
+> (one bump per logical write, every row carries the same value).
 
 **Why** — the sync icon polls the full list to learn "did anything change?"
 (§4.14). Even with idea 2, the client still asks a question the server could
@@ -476,6 +511,119 @@ the fleet.
 > builds an `S3BackupClient` (headBucket/put/listObjects/getLifecycle) from
 > the DB row per call — the raw `Aws\S3\S3Client` is used (flysystem has no
 > lifecycle API).
+
+---
+
+## Implemented 2026-09 (API-023..027 batch)
+
+> **Invite hardening (API-023)** — accepting an invitation now REPAIRS the
+> joiner's session: a `TeamMemberAdded` listener (`SetCurrentTeamOnJoin`)
+> repoints `current_team_id` when it is NULL or dangling (a still-valid team
+> choice is respected), which is the root cause of "invited users couldn't
+> access the team". `AddTeamMember` also now: looks users up
+> case-insensitively (`lower(email)`), prunes the team's stale invitations
+> for the email after a successful add, and rejects a wrong-session accept —
+> the vendor accept route passes the OWNER as its `$user`, so a mismatch
+> between the session user and the invited email → `dangerBanner` redirect
+> instead of joining the wrong account. Invite storage lowercases the email;
+> `Team::hasUserWithEmail` is case-insensitive. The vendor accept route can
+> NOT be overridden app-side (Laravel keys routes by method+URI — the later
+> vendor registration wins); guards therefore live in the action layer.
+>
+> **Public share links (API-024)** — `item_share_links` (uuid PK, unique
+> `item_id`, unique 64-char random `token`, `activated_at`/`deactivated_at`).
+> One row per box; semantics in `App\Support\ItemShare`: activate-while-active
+> = idempotent 200 (same token), re-activating a REVOKED link mints a FRESH
+> token (old URL dead forever), revoking stamps `deactivated_at` (idempotent,
+> bumps revision only on change). API trio `POST/GET/DELETE
+> api/item/{item}/share` (barcode-registry auth matrix, 201 first
+> activation); revoked payloads expose neither token nor URL. The public page
+> `GET /share/{token}` (unauthenticated, standalone blade, no app assets)
+> renders ONLY names — box + contents + status/location, no ids/team/owner —
+> and 404s on unknown/revoked tokens and on trashed boxes (soft-delete scope).
+> Revision bumps once per effective mutation; `items.updated_at` untouched.
+>
+> **Kanban QR + share visibility (API-025)** — vendored qrcodejs 1.0.0 (MIT,
+> `public/js/vendor/qrcode.min.js`, offline-safe). QR affordance on every
+> card (blade + `buildCardHtml` parity) opens a QR modal through POST
+> `/kanban/item/{itemId}/share` (creates the link on the fly). Details modal
+> gained a "Share & QR" section driven by the additive `share` field on
+> `GET /kanban/item/{itemId}` (create/deactivate/copy/QR). Web proxies
+> POST/DELETE `/kanban/item/{itemId}/share` are team-scoped (404 foreign),
+> item:write-gated, and share the API semantics via `ItemShare`.
+>
+> **Incremental activity feed (API-026)** — `GET /kanban/history` accepts an
+> `after` datetime cursor: response becomes `{data, cursor}` (no `after` →
+> legacy bare array, unchanged). The comparison is `changed_at >= after`
+> (INCLUSIVE — the sanctioned simple tie-handling): second-granularity
+> storage makes strict `>` LOSE same-second rows, while the inclusive cursor
+> only re-delivers the bounded same-timestamp set, which the client dedupes
+> by id (rows are append-only). `cursor` = max returned `changed_at` (or the
+> echoed request cursor when empty) so the client chains blindly. kanban.js
+> keeps `historyCursor`, sends `after=`, merges deduped rows (cap 50), and
+> the 5s poll now fetches history ONLY when the revision moved — an idle
+> board issues one `/kanban/revision` call and nothing else.
+>
+> **Tombstone catalogue (API-027)** — `GET api/status` and `GET api/location`
+> are now trashed-INCLUSIVE: soft-deleted rows stay listed with a non-null
+> `deleted_at` (live rows keep `deleted_at: null`), so a client holding
+> history rows that reference a deleted status/location can still resolve its
+> NAME locally. Everything else treats tombstones as deleted: show/route
+> bindings stay default-scoped (trashed id → plain 404), the board's own
+> column queries stay live-only (a deleted column vanishes), and every WRITE
+> path rejects tombstoned ids — `Rule::exists(...)->whereNull('deleted_at')`
+> on item store/update/assign/bulk-assign + the kanban barcode update
+> (plain `exists:` is scope-blind and silently accepted deleted ids) → 422;
+> transfer/bulk-move were already scoped at their Eloquent lookups.
+> Server-side name resolution is trashed-inclusive everywhere history is
+> rendered: kanban `resolveValueToName` (status/location/parent), the
+> history + activity name plucks, the board/delta/search/details eager loads
+> (a board card keeps a deleted location's NAME), and the API-009/010 audit
+> hydration keeps `location_name`. History rows keep carrying raw ids by
+> contract — the app resolves from the now tombstone-carrying catalogue.
+>
+> **Identity QR on the item details (API-028)** — the kanban details modal
+> now renders the box's OWN identity QR inline in the Item Information
+> panel: the QR encodes the item's BARE uuid (`item.id` — the identifier
+> attached to every box/item), with the uuid as caption and a copy-uuid
+> button. Scanning it yields the raw uuid (kanban search resolves an exact
+> id match; the app/PDA can resolve the item directly). Same vendored
+> qrcodejs as the share QR; the public-share QR affordances (card button +
+> Share & QR section, API-025) are untouched and remain share-URL QRs. No
+> API/payload change — the details endpoint already carried the uuid.
+>
+> **Cold-storage backup sheet (API-029)** — the backend now prints the SAME
+> QR backup the app prints (MV-135..137 interop). `GET /kanban/backup`
+> (session, owner/Administrator only — `item:write`; Read-Only → 403) renders
+> a printable page: summary header (team, exported-at, chunk count, payload
+> bytes, SHA-256 fingerprint, photo-bytes-are-not-included warning), the
+> manifest QR first, then chunk QRs 3×4 per printed page with `chunk i/N` +
+> crc32 captions. The wire format is mirrored EXACTLY from
+> `BackupCodec.kt` (verified against the Kotlin source): canonical JSON →
+> gzip (MTIME zeroed — JDK parity, deterministic bundles) → 1400-byte raw
+> chunks → text frames `MVBAK1|<schema>|C|<index>|<count>|<crc32 %08x>|<base64>`+
+> manifest `MVBAK1|<schema>|M|<teamId>|<exportedAt>|<count>|<total>|<sha256>|<lengths>`.
+> `App\Support\Backup\BackupCodec` is the export half; the app's scan-to-
+> restore (MV-137 `assemble`) consumes the sheet unchanged (per-chunk CRC,
+> length rules, whole-stream SHA-256, any-order reassembly).
+> `App\Support\Backup\BackupSnapshotBuilder` emits the Kotlin
+> `BackupSnapshot` field names byte-for-byte: statuses/locations trashed-
+> INCLUSIVE with `deletedAt` (API-027), labels with forward-compat
+> `order: null`, LIVE items only with `isBox = parent_id === null` and
+> `locationId`/`statusId` as `""` when null (Kotlin non-nullables — an
+> explicit JSON null would kill the app-side parse), item↔label refs,
+> barcodes and attachment METADATA (no bytes, no storage paths) scoped to
+> live items; deterministic ordering → same data = byte-identical bundle.
+> The same bundle is fetchable machine-to-machine via `GET
+> api/backups/cold-storage` (API-030): the MVBAK1 manifest + frames as JSON
+> (`{schemaVersion, teamId, exportedAt, manifest, frames, chunkCount,
+> totalPayloadBytes, fingerprint}`), same `item:write` gate, effective-team
+> resolution — decodable by the app's MV-137 `assemble`. And `GET
+> api/backups/cold-storage/pdf` (API-031) renders the sheet as a PDF
+> SERVER-side (`App\Support\Backup\BackupPdf`: FPDF, QRs drawn as vector
+> rectangles from chillerlan/php-qrcode's EC-M module matrix — no
+> GD/imagick, byte-deterministic output; deps `setasign/fpdf` +
+> `chillerlan/php-qrcode` ^4.3 for the PHP-8.0 platform).
 
 ---
 
