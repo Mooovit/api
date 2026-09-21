@@ -176,4 +176,181 @@ class LocationApiTest extends TestCase
             ->getJson("/api/location/{$location->id}")
             ->assertNotFound();
     }
+
+    /* API-034 — sub-locations (nullable parent_id) */
+
+    public function test_store_creates_location_with_a_parent_and_roots_stay_null(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $garage = Location::factory()->onTeam($team)->create(['name' => 'Garage']);
+
+        $child = $this->actingAsApi($user, ['location:write'])
+            ->postJson('/api/location', [
+                'name' => 'Black shelf',
+                'team_id' => $team->id,
+                'parent_id' => $garage->id,
+            ])
+            ->assertStatus(201)
+            ->assertJsonPath('name', 'Black shelf')
+            ->assertJsonPath('parent_id', $garage->id)
+            ->json();
+
+        /* The index carries parent_id; root rows keep null */
+        $rows = $this->actingAsApi($user, ['location:read'])
+            ->getJson('/api/location')
+            ->assertOk()
+            ->json();
+        $byId = collect($rows)->keyBy('id');
+        $this->assertSame($garage->id, $byId[$child['id']]['parent_id']);
+        $this->assertNull($byId[$garage->id]['parent_id']);
+    }
+
+    public function test_update_reparents_unparents_and_rejects_cycles(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $a = Location::factory()->onTeam($team)->create(['name' => 'Garage']);
+        $b = Location::factory()->onTeam($team)->create(['name' => 'Black shelf', 'parent_id' => $a->id]);
+        $c = Location::factory()->onTeam($team)->create(['name' => 'Drawer', 'parent_id' => $b->id]);
+
+        /* Moving a under its own grandchild c is a cycle → 422 */
+        $this->actingAsApi($user, ['location:write'])
+            ->patchJson("/api/location/{$a->id}", ['name' => 'Garage', 'parent_id' => $c->id])
+            ->assertStatus(422);
+
+        /* Self-parenting is a cycle too → 422 (as is moving under the
+           direct child b — chain a → b → c means every subtree member is
+           an invalid target for a) */
+        $this->actingAsApi($user, ['location:write'])
+            ->patchJson("/api/location/{$a->id}", ['name' => 'Garage', 'parent_id' => $a->id])
+            ->assertStatus(422);
+        $this->actingAsApi($user, ['location:write'])
+            ->patchJson("/api/location/{$a->id}", ['name' => 'Garage', 'parent_id' => $b->id])
+            ->assertStatus(422);
+
+        /* A plain re-parent on the legacy resource PATCH (Android contract):
+           move a under an unrelated root */
+        $d = Location::factory()->onTeam($team)->create(['name' => 'Basement']);
+        $this->actingAsApi($user, ['location:write'])
+            ->patchJson("/api/location/{$a->id}", ['name' => 'Garage', 'parent_id' => $d->id])
+            ->assertOk()
+            ->assertJsonPath('parent_id', $d->id);
+        $this->assertSame($d->id, $a->fresh()->parent_id);
+
+        /* Re-parenting to a root (parent_id: null) is always allowed */
+        $this->actingAsApi($user, ['location:write'])
+            ->patchJson("/api/location/{$b->id}", ['name' => 'Black shelf', 'parent_id' => null])
+            ->assertOk()
+            ->assertJsonPath('parent_id', null);
+        $this->assertNull($b->fresh()->parent_id);
+    }
+
+    public function test_update_without_parent_id_leaves_the_hierarchy_alone(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $parent = Location::factory()->onTeam($team)->create();
+        $child = Location::factory()->onTeam($team)->create(['parent_id' => $parent->id]);
+
+        $this->actingAsApi($user, ['location:write'])
+            ->patchJson("/api/location/{$child->id}", ['name' => 'Renamed'])
+            ->assertOk();
+
+        $this->assertSame($parent->id, $child->fresh()->parent_id);
+    }
+
+    public function test_parent_must_be_same_team_and_live(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        [$stranger] = $this->newUserWithTeam();
+        $foreign = Location::factory()->onTeam($stranger->ownedTeams()->first())->create(['name' => 'Secret']);
+
+        $trashed = Location::factory()->onTeam($team)->create();
+        $trashed->delete();
+
+        $own = Location::factory()->onTeam($team)->create();
+
+        /* store */
+        $this->actingAsApi($user, ['location:write'])
+            ->postJson('/api/location', ['name' => 'X', 'team_id' => $team->id, 'parent_id' => $foreign->id])
+            ->assertStatus(422);
+        $this->actingAsApi($user, ['location:write'])
+            ->postJson('/api/location', ['name' => 'X', 'team_id' => $team->id, 'parent_id' => $trashed->id])
+            ->assertStatus(422);
+
+        /* update — a foreign-team or trashed parent is a plain 422 and the
+           generic message leaks nothing about the foreign row */
+        $response = $this->actingAsApi($user, ['location:write'])
+            ->patchJson("/api/location/{$own->id}", ['name' => 'X', 'parent_id' => $foreign->id])
+            ->assertStatus(422);
+        $this->assertStringNotContainsString('Secret', $response->getContent());
+        $this->actingAsApi($user, ['location:write'])
+            ->patchJson("/api/location/{$own->id}", ['name' => 'X', 'parent_id' => $trashed->id])
+            ->assertStatus(422);
+
+        $this->assertNull($own->fresh()->parent_id);
+    }
+
+    public function test_destroy_reparents_direct_children_to_root(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $parent = Location::factory()->onTeam($team)->create(['name' => 'Garage']);
+        $child = Location::factory()->onTeam($team)->create(['name' => 'Black shelf', 'parent_id' => $parent->id]);
+        $grandchild = Location::factory()->onTeam($team)->create(['name' => 'Drawer', 'parent_id' => $child->id]);
+
+        $response = $this->actingAsApi($user, ['location:write'])
+            ->deleteJson("/api/location/{$parent->id}")
+            ->assertOk()
+            ->assertJsonPath('success', 'success');
+
+        /* The direct children are reported (grandchildren untouched) */
+        $this->assertSame([$child->id], $response->json('detached_ids'));
+
+        /* The trashed-inclusive index (API-027) still carries the tombstone */
+        $rows = $this->actingAsApi($user, ['location:read'])
+            ->getJson('/api/location')
+            ->assertOk()
+            ->assertJsonCount(3)
+            ->json();
+        $byId = collect($rows)->keyBy('id');
+        $this->assertNotNull($byId[$parent->id]['deleted_at']);
+
+        /* The child survived as a live root; the grandchild kept its parent */
+        $this->assertNull($byId[$child->id]['deleted_at']);
+        $this->assertNull($byId[$child->id]['parent_id']);
+        $this->assertNull($byId[$grandchild->id]['deleted_at']);
+        $this->assertSame($child->id, $byId[$grandchild->id]['parent_id']);
+    }
+
+    public function test_revision_moves_on_create_with_parent_and_delete_with_reparent(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $revision = function () use ($user) {
+            return (int) $this->actingAsApi($user, ['location:read'])
+                ->getJson('/api/revision')
+                ->assertOk()
+                ->json('revision');
+        };
+        $before = $revision();
+
+        $garage = $this->actingAsApi($user, ['location:write'])
+            ->postJson('/api/location', ['name' => 'Garage', 'team_id' => $team->id])
+            ->assertStatus(201)
+            ->json();
+        $this->assertSame($before + 1, $revision(), 'location store must bump once');
+
+        $this->actingAsApi($user, ['location:write'])
+            ->postJson('/api/location', [
+                'name' => 'Black shelf',
+                'team_id' => $team->id,
+                'parent_id' => $garage['id'],
+            ])
+            ->assertStatus(201);
+        $this->assertSame($before + 2, $revision(), 'store with a parent must bump once');
+
+        /* Deleting a parent bumps once, from the trashed row's own deleted
+           event — the children detach is a mass update without events */
+        $this->actingAsApi($user, ['location:write'])
+            ->deleteJson("/api/location/{$garage['id']}")
+            ->assertOk();
+        $this->assertSame($before + 3, $revision(), 'delete-with-reparent must bump once');
+    }
 }

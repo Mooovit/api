@@ -11,7 +11,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Location extends Model
 {
-    public $fillable = ['name', 'team_id'];
+    public $fillable = ['name', 'team_id', 'parent_id'];
     use HasFactory;
     use Uuids;
     use SoftDeletes;
@@ -23,6 +23,26 @@ class Location extends Model
     public function team(): BelongsTo
     {
         return $this->belongsTo(Team::class);
+    }
+
+    /**
+     * Parent location relation (API-034 sub-locations) — self-referencing
+     * `parent_id`, null for root locations.
+     * @return BelongsTo
+     */
+    public function parent(): BelongsTo
+    {
+        return $this->belongsTo(Location::class, 'parent_id');
+    }
+
+    /**
+     * Direct child locations (API-034) — one level only, not the whole
+     * subtree. Trashed children are hidden by the SoftDeletes scope.
+     * @return HasMany
+     */
+    public function children(): HasMany
+    {
+        return $this->hasMany(Location::class, 'parent_id');
     }
 
     /**

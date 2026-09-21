@@ -624,6 +624,26 @@ the fleet.
 > rectangles from chillerlan/php-qrcode's EC-M module matrix — no
 > GD/imagick, byte-deterministic output; deps `setasign/fpdf` +
 > `chillerlan/php-qrcode` ^4.3 for the PHP-8.0 platform).
+>
+> **Sub-locations (API-034)** — locations gain a hierarchy:
+> `locations.parent_id` is a nullable, indexed self-FK (migration mirrors
+> `create_item_relations` verbatim). `POST api/location` takes an optional
+> `parent_id` that must be a LIVE SAME-TEAM location
+> (`Rule::exists(...)->whereNull('deleted_at')->where('team_id', …)` — a
+> foreign-team or trashed id is a generic 422, probing leaks nothing); the
+> legacy resource PATCH takes it too, where the key is optional (absent →
+> hierarchy untouched, `parent_id: null` → back to root) and a cycle
+> (target is the location itself or one of its descendants) is refused
+> IMPERATIVELY by `wouldCycle()/ensureNoCycle()`, the twin of the item
+> endpoints → 422 "Cannot move a location into one of its own
+> descendants.". Deleting a location mirrors the API-008 item policy in one
+> transaction: soft delete + DIRECT children re-parented to root, reported
+> additively as `detached_ids` next to the unchanged `{success: 'success'}`
+> (grandchildren keep their parents, trashed children untouched). The
+> catalogue (`index`/`show`) serializes the model directly, so `parent_id`
+> rides ADDITIVELY — no API Resource, old clients unaffected; locations
+> stay outside the delta feed (full-pull, §2) and revision bumps come from
+> the observer as before. Client side: MV-152.
 
 ---
 
