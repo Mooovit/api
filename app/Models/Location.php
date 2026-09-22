@@ -11,7 +11,9 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Location extends Model
 {
-    public $fillable = ['name', 'team_id', 'parent_id'];
+    /* API-035: `barcode` is the single optional locator code — serialized
+       directly (no API Resource) so it rides index/show/mutation payloads. */
+    public $fillable = ['name', 'team_id', 'parent_id', 'barcode'];
     use HasFactory;
     use Uuids;
     use SoftDeletes;

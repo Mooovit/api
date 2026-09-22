@@ -82,6 +82,8 @@ tickets/
 | API-031  | — (user request: the cold-storage route gives the PDF directly, Matthieu 2026-09) | Cold-storage backup PDF — GET api/backups/cold-storage/pdf renders the MVBAK1 sheet server-side (FPDF + pure-PHP QR) |
 | API-032  | — (client request: "pick contents", 2026-09; client side MV-138/MV-139) | Item picked state — temporary out-of-box (pick / unpick intent verbs on a nullable `items.picked_at`) |
 | API-033  | — (client request: `?since=` re-delivered same-second rows forever; app side MV-150) | Item delta keyed by team revision — `GET api/item?since_revision=N` over the `items.sync_revision` stamp |
+| API-034  | — (user request: sub-locations, Matthieu 2026-09) | Location hierarchy — nullable `locations.parent_id` (create/move with cycle guard, delete re-parents children; app side MV-152) |
+| API-035  | — (user request: location locator stickers, Matthieu 2026-09-21) | Location barcodes — nullable `locations.barcode`, team-scoped 409 incl. trashed (bind shelf locator stickers; app side MV-153) |
 
 Numbering follows the *Suggested order* in server.md (small wins first, then
 the sync work, then operational features); API-013..021 are appended by

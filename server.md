@@ -644,6 +644,26 @@ the fleet.
 > rides ADDITIVELY — no API Resource, old clients unaffected; locations
 > stay outside the delta feed (full-pull, §2) and revision bumps come from
 > the observer as before. Client side: MV-152.
+>
+> **Location barcodes (API-035, implemented 2026-09-21)** — locations gain
+> ONE optional locator code: `locations.barcode` is a nullable string(191)
+> (plain ALTER, no DB unique index — soft-deleted rows keep their code
+> reserved and the SQLite suite makes `unique(team_id, barcode)` fragile;
+> uniqueness is enforced controller-level like the item registry, API-011).
+> `POST api/location` takes an optional `barcode` (trimmed, max 191,
+> whitespace-only → null); the legacy resource PATCH takes it too with key
+> semantics: absent → untouched, `barcode: null` → cleared, a value → set.
+> A team-scoped duplicate — soft-deleted rows INCLUDED, self excluded on
+> PATCH — is a **409** `{'error': 'Barcode already assigned to a location
+> in this team'}` (the ItemBarcodeController shape — a conflict, not a 422);
+> two teams may hold the same code, and cross-resource collisions with
+> `item_barcodes.code` are intentionally NOT enforced. `barcode` rides the
+> direct model serialization additively; tombstones in the trashed-inclusive
+> index (API-027) carry it too (history stays resolvable); locations stay
+> out of the delta feed (§2 full-pull). Client contract (MV-153): the
+> printed location QR carries the RAW location id (the box-label
+> convention), and scanned codes resolve ITEMS-FIRST — a code on both an
+> item and a location resolves to the item; resolution order is client-side.
 
 ---
 

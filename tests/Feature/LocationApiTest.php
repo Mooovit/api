@@ -353,4 +353,150 @@ class LocationApiTest extends TestCase
             ->assertOk();
         $this->assertSame($before + 3, $revision(), 'delete-with-reparent must bump once');
     }
+
+    /* API-035 — location barcodes (nullable locations.barcode) */
+
+    public function test_store_with_barcode_trims_and_the_index_carries_it(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+
+        $tagged = $this->actingAsApi($user, ['location:write'])
+            ->postJson('/api/location', [
+                'name' => 'Black shelf',
+                'team_id' => $team->id,
+                'barcode' => '  LOC-042  ',
+            ])
+            ->assertStatus(201)
+            ->assertJsonPath('barcode', 'LOC-042')
+            ->json();
+
+        /* Untagged rows carry barcode: null; the index shows both */
+        $plain = $this->actingAsApi($user, ['location:write'])
+            ->postJson('/api/location', ['name' => 'Garage', 'team_id' => $team->id])
+            ->assertStatus(201)
+            ->assertJsonPath('barcode', null)
+            ->json();
+
+        $rows = $this->actingAsApi($user, ['location:read'])
+            ->getJson('/api/location')
+            ->assertOk()
+            ->json();
+        $byId = collect($rows)->keyBy('id');
+        $this->assertSame('LOC-042', $byId[$tagged['id']]['barcode']);
+        $this->assertNull($byId[$plain['id']]['barcode']);
+    }
+
+    public function test_a_team_duplicate_barcode_is_a_409_on_store_and_patch(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $held = Location::factory()->onTeam($team)->create(['barcode' => 'LOC-042']);
+
+        /* store */
+        $this->actingAsApi($user, ['location:write'])
+            ->postJson('/api/location', [
+                'name' => 'Second shelf', 'team_id' => $team->id, 'barcode' => 'LOC-042',
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('error', 'Barcode already assigned to a location in this team');
+
+        /* PATCH — the duplicate is a conflict, not a 422 validation error */
+        $other = Location::factory()->onTeam($team)->create();
+        $this->actingAsApi($user, ['location:write'])
+            ->patchJson("/api/location/{$other->id}", ['name' => 'Other', 'barcode' => 'LOC-042'])
+            ->assertStatus(409)
+            ->assertJsonPath('error', 'Barcode already assigned to a location in this team');
+
+        $this->assertNull($other->fresh()->barcode);
+        $this->assertSame('LOC-042', $held->fresh()->barcode);
+    }
+
+    public function test_a_barcode_held_by_a_trashed_location_stays_reserved(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $trashed = Location::factory()->onTeam($team)->create(['barcode' => 'LOC-042']);
+        $trashed->delete();
+
+        $this->actingAsApi($user, ['location:write'])
+            ->postJson('/api/location', [
+                'name' => 'New shelf', 'team_id' => $team->id, 'barcode' => 'LOC-042',
+            ])
+            ->assertStatus(409);
+
+        $other = Location::factory()->onTeam($team)->create();
+        $this->actingAsApi($user, ['location:write'])
+            ->patchJson("/api/location/{$other->id}", ['name' => 'Other', 'barcode' => 'LOC-042'])
+            ->assertStatus(409);
+    }
+
+    public function test_patch_barcode_set_clear_absent_and_self_assign(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $location = Location::factory()->onTeam($team)->create(['name' => 'Garage', 'barcode' => 'LOC-042']);
+
+        /* Set */
+        $this->actingAsApi($user, ['location:write'])
+            ->patchJson("/api/location/{$location->id}", ['name' => 'Garage', 'barcode' => 'LOC-007'])
+            ->assertOk()
+            ->assertJsonPath('barcode', 'LOC-007');
+        $this->assertSame('LOC-007', $location->fresh()->barcode);
+
+        /* Clear (present null) */
+        $this->actingAsApi($user, ['location:write'])
+            ->patchJson("/api/location/{$location->id}", ['name' => 'Garage', 'barcode' => null])
+            ->assertOk()
+            ->assertJsonPath('barcode', null);
+        $this->assertNull($location->fresh()->barcode);
+
+        /* Set again, then a PATCH WITHOUT the key leaves it untouched */
+        $location->fresh()->update(['barcode' => 'LOC-042']);
+        $this->actingAsApi($user, ['location:write'])
+            ->patchJson("/api/location/{$location->id}", ['name' => 'Renamed'])
+            ->assertOk();
+        $this->assertSame('LOC-042', $location->fresh()->barcode);
+
+        /* Re-assigning the location its own code is not a 409 */
+        $this->actingAsApi($user, ['location:write'])
+            ->patchJson("/api/location/{$location->id}", ['name' => 'Renamed', 'barcode' => 'LOC-042'])
+            ->assertOk()
+            ->assertJsonPath('barcode', 'LOC-042');
+    }
+
+    public function test_the_same_barcode_may_live_in_two_teams(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        [$stranger, $strangerTeam] = $this->newUserWithTeam();
+
+        Location::factory()->onTeam($team)->create(['barcode' => 'SHARED-1']);
+
+        $this->actingAsApi($stranger, ['location:write'])
+            ->postJson('/api/location', [
+                'name' => 'Foreign shelf', 'team_id' => $strangerTeam->id, 'barcode' => 'SHARED-1',
+            ])
+            ->assertStatus(201)
+            ->assertJsonPath('barcode', 'SHARED-1');
+    }
+
+    public function test_revision_moves_on_a_barcode_patch(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $location = Location::factory()->onTeam($team)->create();
+        $revision = function () use ($user) {
+            return (int) $this->actingAsApi($user, ['location:read'])
+                ->getJson('/api/revision')
+                ->assertOk()
+                ->json('revision');
+        };
+        $before = $revision();
+
+        $this->actingAsApi($user, ['location:write'])
+            ->patchJson("/api/location/{$location->id}", ['name' => 'Garage', 'barcode' => 'LOC-042'])
+            ->assertOk();
+        $this->assertSame($before + 1, $revision(), 'a barcode PATCH must bump the team revision');
+
+        /* Clearing bumps too */
+        $this->actingAsApi($user, ['location:write'])
+            ->patchJson("/api/location/{$location->id}", ['name' => 'Garage', 'barcode' => null])
+            ->assertOk();
+        $this->assertSame($before + 2, $revision(), 'a barcode clear must bump the team revision');
+    }
 }
