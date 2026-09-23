@@ -499,4 +499,28 @@ class LocationApiTest extends TestCase
             ->assertOk();
         $this->assertSame($before + 2, $revision(), 'a barcode clear must bump the team revision');
     }
+
+    /* API-036 — the path display is WEB-ONLY: the mobile contract must stay
+       untouched (Android builds the tree client-side from parent_id) */
+
+    public function test_index_rows_never_gain_a_computed_path_field(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $garage = Location::factory()->onTeam($team)->create(['name' => 'Garage']);
+        Location::factory()->onTeam($team)->create([
+            'name' => 'Black shelf',
+            'parent_id' => $garage->id,
+        ]);
+
+        $rows = $this->actingAsApi($user, ['location:read'])
+            ->getJson('/api/location')
+            ->assertOk()
+            ->assertJsonCount(2)
+            ->json();
+
+        foreach ($rows as $row) {
+            $this->assertArrayNotHasKey('location_path', $row);
+            $this->assertArrayNotHasKey('path', $row);
+        }
+    }
 }

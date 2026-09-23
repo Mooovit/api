@@ -664,6 +664,26 @@ the fleet.
 > printed location QR carries the RAW location id (the box-label
 > convention), and scanned codes resolve ITEMS-FIRST — a code on both an
 > item and a location resolves to the item; resolution order is client-side.
+>
+> **Location path display (API-036, WEB-ONLY — no API change)** — the
+> sub-location hierarchy from API-034 now renders as a full ancestor path
+> ("Garage > Black shelf") across the kanban web surfaces: board cards
+> (additive `location_path` in the boardRow shape, so delta rows carry it
+> too), location-board column titles, item-details modal + search/filter
+> results (resolved client-side from an injected `window.KANBAN_LOCATION_PATHS`
+> map), the batch/filter location selects, the Manage Locations list, the
+> activity feed's location rows, and the public share page. Engine:
+> `Location::pathsForTeam($teamId)` — ONE trashed-inclusive query per team,
+> chains walked in PHP with a visited-set + depth-cap guard (corrupt cycles
+> terminate with partial paths); per-request memoized, never serialized —
+> `api/location` / `api/item` payloads are unchanged (Android resolves the
+> tree client-side, MV-152). Delta follow-up: when the live poll reports
+> "Board updated — N changed, M removed", the delta rows also refresh the
+> injected `KANBAN_LOCATION_PATHS` map (fresh server-computed paths), and
+> an OPEN item-details modal keeps itself truthful — it silently re-fetches
+> when its item (or one of its contents) is among the changed rows, and
+> closes when its item was removed; an unaffected modal is left untouched
+> so mid-edit state (label/barcode input) is never wiped. Client side: web only.
 
 ---
 

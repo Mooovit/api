@@ -904,4 +904,154 @@ class KanbanTest extends TestCase
         $board = json_decode($response->viewData('jsonData'), true);
         $this->assertSame([], $board);
     }
+
+    /* ---- API-036: location path display ("Garage > Black shelf") ---- */
+
+    /**
+     * A team with Garage > Black shelf (API-034 sub-locations).
+     */
+    private function subLocationTeam(): array
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $garage = Location::factory()->onTeam($team)->create(['name' => 'Garage']);
+        $shelf = Location::factory()->onTeam($team)->create([
+            'name' => 'Black shelf',
+            'parent_id' => $garage->id,
+        ]);
+
+        return [$user, $team, $garage, $shelf];
+    }
+
+    public function test_status_board_renders_the_full_sub_location_path(): void
+    {
+        [$user, $team, , $shelf] = $this->subLocationTeam();
+        $status = Status::factory()->onTeam($team)->create();
+        $inShelf = Item::factory()->onTeam($team)->withStatus($status)->inLocation($shelf)->create();
+        $root = Location::factory()->onTeam($team)->create(['name' => 'Cellar']);
+        $inRoot = Item::factory()->onTeam($team)->withStatus($status)->inLocation($root)->create();
+
+        $response = $this->actingAsFresh($user)->get('/kanban/status')->assertOk();
+
+        /* Additive row field: sub-location resolves to the full path,
+           a root location stays its bare name */
+        $board = json_decode($response->viewData('jsonData'), true);
+        $rows = collect($board[0]['item'])->keyBy('id');
+        $this->assertSame('Garage > Black shelf', $rows[$inShelf->id]['location_path']);
+        $this->assertSame('Cellar', $rows[$inRoot->id]['location_path']);
+        $this->assertSame('Black shelf', $rows[$inShelf->id]['location_name']);
+
+        /* The server-rendered chip shows the path (Blade escapes ">") */
+        $this->assertStringContainsString('Garage &gt; Black shelf', $response->getContent());
+    }
+
+    public function test_location_board_column_titles_and_selects_show_the_path(): void
+    {
+        [$user, $team, $garage, $shelf] = $this->subLocationTeam();
+
+        $response = $this->actingAsFresh($user)->get('/kanban/location')->assertOk();
+
+        $board = json_decode($response->viewData('jsonData'), true);
+        $titles = array_column($board, 'title', 'id');
+        $this->assertSame('Garage > Black shelf', $titles[$shelf->id]);
+        $this->assertSame('Garage', $titles[$garage->id]);
+
+        /* Batch-move + filter selects: path labels on plain-id options */
+        $html = $response->getContent();
+        $this->assertStringContainsString(
+            '<option value="' . $shelf->id . '">Garage &gt; Black shelf</option>',
+            $html
+        );
+    }
+
+    public function test_delta_rows_carry_the_sub_location_path(): void
+    {
+        [$user, $team, , $shelf] = $this->subLocationTeam();
+        $item = Item::factory()->onTeam($team)->inLocation($shelf)->create();
+
+        $json = $this->actingAsFresh($user)
+            ->get('/kanban/delta?since=' . urlencode(now()->subMinute()->toISOString()))
+            ->assertOk()
+            ->json();
+
+        $row = collect($json['changed'])->firstWhere('id', $item->id);
+        $this->assertSame('Garage > Black shelf', $row['location_path']);
+        $this->assertSame('Black shelf', $row['location_name']);
+    }
+
+    public function test_board_paths_survive_a_trashed_sub_location(): void
+    {
+        [$user, $team, , $shelf] = $this->subLocationTeam();
+        $status = Status::factory()->onTeam($team)->create();
+        $item = Item::factory()->onTeam($team)->withStatus($status)->inLocation($shelf)->create();
+
+        /* Model-level soft delete (no re-parenting — the API destroy
+           endpoint does that): the trashed-inclusive map keeps the path */
+        $shelf->delete();
+
+        $response = $this->actingAsFresh($user)->get('/kanban/status')->assertOk();
+        $board = json_decode($response->viewData('jsonData'), true);
+        $row = collect($board[0]['item'])->firstWhere('id', $item->id);
+        $this->assertSame('Garage > Black shelf', $row['location_path']);
+        $this->assertSame('Black shelf', $row['location_name']);
+    }
+
+    public function test_paths_for_team_is_cycle_safe(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $a = Location::factory()->onTeam($team)->create(['name' => 'A']);
+        Location::factory()->onTeam($team)->create(['name' => 'B', 'parent_id' => $a->id]);
+
+        /* Corrupt the chain directly: a -> b -> a (validation would 422).
+           The walk must terminate and still return partial paths. */
+        $a->forceFill(['parent_id' => $a->id])->saveQuietly();
+
+        $paths = Location::pathsForTeam($team->id);
+        $this->assertSame('A', $paths[$a->id]);
+    }
+
+    public function test_history_and_details_resolve_sub_location_paths(): void
+    {
+        [$user, $team, , $shelf] = $this->subLocationTeam();
+        $item = Item::factory()->onTeam($team)->inLocation($shelf)->create();
+        $move = History::factory()->forItem($item, $user)->create([
+            'field_name' => 'location_id',
+            'old_value' => null,
+            'new_value' => $shelf->id,
+        ]);
+
+        $rows = $this->actingAsFresh($user)
+            ->getJson('/kanban/history')
+            ->assertOk()
+            ->json();
+        $this->assertSame(
+            'Garage > Black shelf',
+            collect($rows)->firstWhere('id', $move->id)['new_value_name']
+        );
+
+        /* The item-details modal resolves the same way */
+        $details = $this->actingAsFresh($user)
+            ->getJson("/kanban/item/{$item->id}")
+            ->assertOk()
+            ->json();
+        $this->assertSame(
+            'Garage > Black shelf',
+            collect($details['history'])->firstWhere('id', $move->id)['new_value_name']
+        );
+    }
+
+    public function test_board_ships_the_client_side_location_path_map(): void
+    {
+        [$user, $team, , $shelf] = $this->subLocationTeam();
+
+        /* The JS details modal / search / filter resolve paths from the
+           injected map (a static kanban.js reads window.KANBAN_LOCATION_PATHS) */
+        $response = $this->actingAsFresh($user)->get('/kanban/status')->assertOk();
+        $html = $response->getContent();
+        $this->assertStringContainsString('KANBAN_LOCATION_PATHS', $html);
+        $this->assertStringContainsString($shelf->id, $html);
+
+        $js = file_get_contents(public_path('js/kanban.js'));
+        $this->assertStringContainsString('function locationDisplay(', $js);
+        $this->assertStringContainsString('location_path || row.location_name', $js);
+    }
 }

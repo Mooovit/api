@@ -18,6 +18,13 @@ mix.js('resources/js/app.js', 'public/js').vue()
     ])
     .webpackConfig(require('./webpack.config'));
 
+/* Disable the desktop-notification plugin (webpack-notifier → node-notifier):
+   on Apple Silicon it spawns the bundled x86_64-only terminal-notifier binary,
+   which dies with "spawn Unknown system error -86" (EBADARCH) AFTER a
+   successful compile — and the non-zero exit makes `make build` fail the
+   whole deploy. Notifications are worthless in CI/deploy anyway. */
+mix.disableNotifications();
+
 if (mix.inProduction()) {
     mix.version();
 }

@@ -246,7 +246,7 @@
                                             @endif
                                             @if($item['location_name'])
                                             <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                                <i class="fas fa-map-marker-alt mr-1"></i>{{ $item['location_name'] }}
+                                                <i class="fas fa-map-marker-alt mr-1"></i>{{ $item['location_path'] ?? $item['location_name'] }}
                                             </span>
                                             @endif
                                         </div>
@@ -301,7 +301,7 @@
                                 <select id="batchLocation" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
                                     <option value="">Keep current location</option>
                                     @foreach($locations as $location)
-                                    <option value="{{ $location->id }}">{{ $location->name }}</option>
+                                    <option value="{{ $location->id }}">{{ $locationPaths[$location->id] ?? $location->name }}</option>
                                     @endforeach
                                 </select>
                             </div>
@@ -421,8 +421,12 @@
                             <div class="space-y-2">
                                 @foreach($locations as $location)
                                 <div class="flex items-center justify-between p-3 bg-white border rounded-lg" data-id="{{ $location->id }}" data-type="location">
-                                    <div class="flex-1">
+                                    <div class="flex-1 min-w-0">
                                         <input type="text" value="{{ $location->name }}" class="edit-input bg-transparent border-none p-0 font-medium text-gray-800 w-full" readonly>
+                                        {{-- API-036: show where the sub-location hangs --}}
+                                        @if(($locationPaths[$location->id] ?? $location->name) !== $location->name)
+                                        <div class="text-xs text-gray-400 truncate">{{ $locationPaths[$location->id] }}</div>
+                                        @endif
                                     </div>
                                     <div class="flex gap-2">
                                         <button onclick="editItem('{{ $location->id }}', 'location')" class="text-blue-600 hover:text-blue-800">
@@ -508,7 +512,7 @@
                                 @endforeach
                             @else
                                 @foreach($locations as $location)
-                                <option value="{{ $location->id }}">{{ $location->name }}</option>
+                                <option value="{{ $location->id }}">{{ $locationPaths[$location->id] ?? $location->name }}</option>
                                 @endforeach
                             @endif
                         </select>
@@ -693,6 +697,10 @@
     <script src="{{ asset('js/vendor/qrcode.min.js') }}"></script>
 
     <!-- Custom Kanban JS -->
+    {{-- API-036: team location id => "Garage > Black shelf" map — the JS
+         details modal / search / filter resolve paths from it client-side.
+         Board cards don't need it (their rows carry `location_path`). --}}
+    <script>window.KANBAN_LOCATION_PATHS = @json($locationPaths ?? []);</script>
     <script src="{{ asset('js/kanban.js') }}?v={{ time() }}"></script>
     
 <script>

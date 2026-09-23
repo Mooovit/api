@@ -24,7 +24,7 @@
                         @endif
                         @if ($box->location)
                             <span class="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full px-3 py-1 text-sm">
-                                <i class="fas fa-location-dot text-xs"></i> {{ $box->location->name }}
+                                <i class="fas fa-location-dot text-xs"></i> {{ $locationPaths[$box->location->id] ?? $box->location->name }}
                             </span>
                         @endif
                     </div>
@@ -53,7 +53,7 @@
                                 @endif
                                 @if ($content->location)
                                     <span class="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full px-2.5 py-0.5 text-xs">
-                                        {{ $content->location->name }}
+                                        {{ $locationPaths[$content->location->id] ?? $content->location->name }}
                                     </span>
                                 @endif
                             </span>

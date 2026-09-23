@@ -236,7 +236,16 @@ async function applyDelta() {
     const changed = data.changed || [];
     const deletedIds = data.deleted_ids || [];
 
-    changed.forEach(row => applyRowToBoard(row));
+    changed.forEach(row => {
+        applyRowToBoard(row);
+        /* Keep the path map fresh for the locations these rows moved to —
+           locationDisplay() reads it, so a refreshed modal/card must not
+           resolve a stale page-load path. */
+        if (row.location_id && row.location_path) {
+            window.KANBAN_LOCATION_PATHS = window.KANBAN_LOCATION_PATHS || {};
+            window.KANBAN_LOCATION_PATHS[row.location_id] = row.location_path;
+        }
+    });
     deletedIds.forEach(id => removeCard(id));
 
     lastRevision = data.revision;
@@ -247,6 +256,10 @@ async function applyDelta() {
 
     if (changed.length || deletedIds.length) {
         showNotification(`Board updated — ${changed.length} changed, ${deletedIds.length} removed`, 'info');
+        /* Keep an OPEN details modal truthful: refresh it when its item is
+           among the changed rows (or one of the viewed item's children is),
+           close it when its item was removed. */
+        await refreshOpenItemDetailsIfAffected(changed, deletedIds);
     }
 }
 
@@ -316,7 +329,7 @@ function buildCardHtml(row) {
                                             </span>` : ''}
                                             ${row.location_name ? `
                                             <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                                <i class="fas fa-map-marker-alt mr-1"></i>${escapeHtml(row.location_name)}
+                                                <i class="fas fa-map-marker-alt mr-1"></i>${escapeHtml(row.location_path || row.location_name)}
                                             </span>` : ''}
                                         </div>
                                         <div class="text-xs text-gray-400 flex items-center gap-2">
@@ -356,6 +369,15 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text == null ? '' : String(text);
     return div.innerHTML;
+}
+
+// API-036: resolve a serialized location to its full path
+// ("Garage > Black shelf") using the server-rendered team map
+// (window.KANBAN_LOCATION_PATHS); falls back to the bare name.
+function locationDisplay(location) {
+    if (!location) return null;
+    const paths = window.KANBAN_LOCATION_PATHS || {};
+    return paths[location.id] || location.name;
 }
 
 function updateLastUpdatedTime() {
@@ -522,23 +544,56 @@ async function quickScanItem() {
 // Enhanced item details
 async function openItemDetails(itemId) {
     try {
-        const response = await axios.get('/kanban/item/' + itemId, {
-            headers: {
-                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
-            }
-        });
-
-        const data = response.data;
+        await fetchItemDetails(itemId);
         currentItemId = itemId;
-        await loadTeamLabels();
-        displayEnhancedItemDetails(data);
         document.getElementById('itemDetailsModal').classList.remove('hidden');
         showNotification('Item details loaded', 'success'); // No sound for details loading
     } catch (error) {
         console.error('Error fetching item details:', error);
         showNotification('Item not found or error loading details', 'error');
+    }
+}
+
+/* Fetch one item's details and render them into the modal — no toasts, no
+   modal-visibility side effects. Throws on fetch errors so callers can
+   react (openItemDetails notifies; the delta refresh falls back to
+   closing the modal). */
+async function fetchItemDetails(itemId) {
+    const response = await axios.get('/kanban/item/' + itemId, {
+        headers: {
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+        }
+    });
+
+    await loadTeamLabels();
+    displayEnhancedItemDetails(response.data);
+    return response.data;
+}
+
+/* Delta follow-up: the board just moved under an open details modal.
+   Refresh the modal when its item is among the changed rows (or one of
+   ITS children changed — the Contents list), close it when its item was
+   removed (the re-fetch would 404: soft-deleted items are unaddressable).
+   An unaffected item's modal is left alone — mid-edit state (label
+   select, barcode input) is never wiped without a reason. */
+async function refreshOpenItemDetailsIfAffected(changed, deletedIds) {
+    if (!currentItemId) return;
+    const modal = document.getElementById('itemDetailsModal');
+    if (!modal || modal.classList.contains('hidden')) return;
+
+    if (deletedIds.includes(currentItemId)) {
+        closeItemDetailsModal();
+        return;
+    }
+    if (changed.some(row => row.id === currentItemId || row.parent_id === currentItemId)) {
+        try {
+            await fetchItemDetails(currentItemId);
+        } catch (error) {
+            console.error('Error refreshing item details:', error);
+            closeItemDetailsModal();
+        }
     }
 }
 
@@ -611,7 +666,7 @@ function displayEnhancedItemDetails(data) {
                     <div class="flex justify-between items-center p-3 bg-white rounded-lg">
                         <span class="font-medium text-gray-700">Location:</span>
                         <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                            ${data.item.location ? data.item.location.name : 'No location'}
+                            ${data.item.location ? locationDisplay(data.item.location) : 'No location'}
                         </span>
                     </div>
                     <div class="flex justify-between items-center p-3 bg-white rounded-lg">
@@ -1144,7 +1199,7 @@ function applyDetailedFilter() {
                 <div class="flex items-center justify-between text-sm">
                     <span class="text-gray-600">Location:</span>
                     <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                        ${item.location ? item.location.name : 'No location'}
+                        ${item.location ? locationDisplay(item.location) : 'No location'}
                     </span>
                 </div>
             </div>
@@ -1898,7 +1953,7 @@ function displaySearchResults(results, query) {
                     <div class="flex items-center justify-between text-sm">
                         <span class="text-gray-600">Location:</span>
                         <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                            ${item.location ? item.location.name : 'No location'}
+                            ${item.location ? locationDisplay(item.location) : 'No location'}
                         </span>
                     </div>
                     ${item.children_count > 0 ? `
