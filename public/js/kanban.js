@@ -333,6 +333,9 @@ function buildCardHtml(row) {
                                             </span>` : ''}
                                         </div>
                                         <div class="text-xs text-gray-400 flex items-center gap-2">
+                                            <button onclick="event.stopPropagation(); printItemLabel('${row.id}', this)" title="Print DYMO label" class="dymo-print hover:text-indigo-600">
+                                                <i class="fas fa-print"></i>
+                                            </button>
                                             <button onclick="event.stopPropagation(); showCardQr('${row.id}')" title="Show public share QR" class="hover:text-indigo-600">
                                                 <i class="fas fa-qrcode"></i>
                                             </button>
@@ -633,7 +636,9 @@ function displayEnhancedItemDetails(data) {
                         <button onclick="openMoveItemModal()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded-lg text-sm font-medium transition">
                             <i class="fas fa-arrows-alt mr-1"></i>Move
                         </button>
-
+                        <button onclick="printItemLabel('${data.item.id}', this)" class="dymo-print bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1 rounded-lg text-sm font-medium transition" title="Print DYMO label">
+                            <i class="fas fa-print mr-1"></i>Print label
+                        </button>
                     </div>
                 </div>
                 
@@ -655,7 +660,7 @@ function displayEnhancedItemDetails(data) {
                 <div class="space-y-3">
                     <div class="flex justify-between items-center p-3 bg-white rounded-lg">
                         <span class="font-medium text-gray-700">Name:</span>
-                        <span class="text-gray-900 font-semibold">${data.item.name}</span>
+                        <span id="detailsItemName" class="text-gray-900 font-semibold">${data.item.name}</span>
                     </div>
                     <div class="flex justify-between items-center p-3 bg-white rounded-lg">
                         <span class="font-medium text-gray-700">Status:</span>
@@ -724,7 +729,12 @@ function displayEnhancedItemDetails(data) {
                             <div class="bg-white border rounded-lg p-3 cursor-pointer hover:bg-gray-50 transition" onclick="openItemDetails('${child.id}')">
                                 <div class="flex items-center justify-between">
                                     <div class="font-medium text-gray-800">${child.name}</div>
-                                    <i class="fas fa-external-link-alt text-gray-400"></i>
+                                    <div class="flex items-center gap-2 text-xs text-gray-400">
+                                        <button onclick="event.stopPropagation(); printItemLabel('${child.id}', this)" title="Print DYMO label" class="dymo-print hover:text-indigo-600">
+                                            <i class="fas fa-print"></i>
+                                        </button>
+                                        <i class="fas fa-external-link-alt"></i>
+                                    </div>
                                 </div>
                                 <div class="text-xs text-gray-500 mt-1">Click to view details</div>
                             </div>
@@ -1692,6 +1702,28 @@ let currentShareUrl = null;
  * ensures the item has an active public link (creates it on the fly via
  * POST /kanban/item/{id}/share) and opens the QR modal.
  */
+/* API-038: print one DYMO sticker (name + uuid as Code128 + QR) for an item.
+   The uuid comes from the caller (card/modal markup — ids are inline-safe);
+   the display name is resolved from the surrounding DOM, never from
+   interpolated strings. The button is only visible after the shared Dymo
+   service detects a LabelWriter (body.dymo-ready), but the handler still
+   guards so a stale click fails with a message instead of silently. */
+async function printItemLabel(itemId, el) {
+    if (!itemId || !window.Dymo) return;
+
+    const card = el ? el.closest('.kanban-item') : null;
+    const name = (card && card.querySelector('.font-medium'))
+        ? card.querySelector('.font-medium').textContent.trim()
+        : (document.getElementById('detailsItemName')?.textContent.trim() || itemId);
+
+    try {
+        await window.Dymo.printItemQueued(name, itemId);
+        showNotification('Label sent to printer', 'success');
+    } catch (error) {
+        showNotification('Print failed: ' + (error && error.message ? error.message : 'unknown error'), 'error');
+    }
+}
+
 async function showCardQr(itemId) {
     if (!itemId) return;
 
@@ -2016,12 +2048,18 @@ document.addEventListener('DOMContentLoaded', function() {
         searchInput.addEventListener('input', function(e) {
             performSearch(e.target.value.trim());
         });
-        
+
         searchInput.addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
                 performSearch(e.target.value.trim());
             }
         });
+    }
+
+    // API-038: one DYMO detection round trip per page load — on success the
+    // service tags body.dymo-ready and every .dymo-print button appears
+    if (window.Dymo) {
+        window.Dymo.detect();
     }
 });
 
@@ -2071,6 +2109,7 @@ window.openSearchPage = openSearchPage;
 window.closeSearchModal = closeSearchModal;
 window.setSearchFilter = setSearchFilter;
 window.showCardQr = showCardQr;
+window.printItemLabel = printItemLabel;
 window.closeQrModal = closeQrModal;
 window.copyQrShareUrl = copyQrShareUrl;
 window.copyShareUrl = copyShareUrl;

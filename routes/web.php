@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\ItemController;
 use App\Http\Controllers\KanbanController;
+use App\Http\Controllers\LabelPrintController;
 use App\Http\Controllers\PublicShareController;
 use App\Http\Controllers\BackupSheetController;
 use App\Http\Controllers\BackupScheduleController;
@@ -76,6 +77,12 @@ Route::middleware('auth:sanctum')->group(function () {
     // are shared with the API trio via App\Support\ItemShare.
     Route::post('/kanban/item/{itemId}/share', [KanbanController::class, 'shareItem']);
     Route::delete('/kanban/item/{itemId}/share', [KanbanController::class, 'unshareItem']);
+
+    // API-038: label print station — scan a box, touch contents to print
+    // DYMO stickers. Top-level path (no /kanban/{type} collision); item
+    // data itself stays gated by GET /kanban/item/{itemId}.
+    Route::get('/label-print', [LabelPrintController::class, 'index'])
+        ->name('label-print.index');
 
     // Generic route must come LAST
     Route::get('/kanban/{type}', [KanbanController::class, 'index']);

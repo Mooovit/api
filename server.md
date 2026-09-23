@@ -684,6 +684,65 @@ the fleet.
 > when its item (or one of its contents) is among the changed rows, and
 > closes when its item was removed; an unaffected modal is left untouched
 > so mid-edit state (label/barcode input) is never wiped. Client side: web only.
+>
+> **Batch sync (API-037, implemented 2026-09-22)** — one request for a
+> phone's whole offline queue: `POST api/sync/batch` (auth:sanctum,
+> effective-team + `item:write` permission AND ability) takes
+> `operations[]` of 1..200, each `{op, base_revision, item_id?, changes?,
+> base?, label_id?}` with `op` ∈ create | rename | move | assign | pick |
+> unpick | delete | label_add | label_remove (the Android PendingOp verbs,
+> plan.md §4.14). Ops are applied ONE BY ONE in submission order, each in
+> its own transaction with per-op isolation (a failing op is an `error`
+> result; the batch continues), and every op persists a receipt row
+> (`sync_batch_operations`: exact payload, result, detail, applied_at;
+> `sync_batches` holds the `total/applied/conflicted/noop/failed` counters
+> + `finished_at`). Response: `{batch_id, results: [{index, op, item_id,
+> result, item?, conflicts?, error?}], revision}` + `X-Revision`;
+> `GET api/sync/batch/{batchId}` replays the persisted receipts for
+> reconciliation (team-scoped — a foreign batch is a 404; no existence
+> leak). Conflict oracle: each field op carries `base_revision` (the team
+> revision the phone last synced at, API-003/033) plus per-field `base`
+> values; when the item's `sync_revision` moved past it — EXCLUDING stamps
+> the batch itself produced (the phone's own earlier ops are not
+> divergence) — the server merges field-by-field: `server == base` → apply,
+> `server == mine` → noop, else → `conflict` `{base, yours, server}`,
+> atomic per op (any conflict applies nothing, zero bumps). Deletes ignore
+> a diverged base by design (they converge — documented LWW) and replicate
+> DELETE api/item semantics (`detached_ids` in the receipt); labels are
+> idempotent (duplicate attach / absent detach = `noop`, no bump — unlike
+> the single endpoint's 409/unconditional bump; child item → `has_parent`
+> error). Per-op error codes: `not_found`, `foreign_team`, `cycle`,
+> `bad_reference`, `has_parent`, `label_not_found`, `invalid_op`,
+> `exception`. Same-batch create→reference is unsupported v1 (the phone
+> cannot know server UUIDs before the create round-trips). Receipt tables
+> are NOT revision-observed (recording them bumps nothing) and the global
+> 60 req/min limiter is untouched — one batch is one request, up to 200
+> ops. Envelope violations (empty/>200/unknown op/missing base_revision or
+> item_id) are a 422 that persists nothing. Client side: to be ticketed (MV).
+>
+> **DYMO label printing (API-038, WEB-ONLY — no API change, 2026-09-23)** —
+> paper stickers for packed goods: item NAME + the item's uuid encoded BOTH
+> as Code128 and as QR (same convention as the API-028 identity QR — either
+> symbology scanned back resolves via `GET /kanban/item/{uuid}`). Printing
+> happens client-side through the DYMO Connect Web API: framework 2.x is
+> VENDORED (`public/js/vendor/dymo.connect.framework.js`, official
+> download.dymo.com build — no runtime CDN) and talks to the workstation's
+> local DYMO Connect service (localhost:41951). Shared service
+> `public/js/dymo.js` (`window.Dymo`): cached printer detection (one web
+> service round trip per page load; success tags `body.dymo-ready` and CSS
+> reveals every `.dymo-print` hook — buttons stay invisible when no
+> LabelWriter is attached), localStorage prefs for printer + label template
+> (label stock is a property of the PHYSICAL printer, not the team), three
+> built-in DieCutLabel templates (30334 default with name + Code128 + QR,
+> 30252 slim with all three, 30336 small with QR only — a 36-char Code128
+> cannot share 2.25" with a legible QR), and a serialized print queue.
+> Hooks: kanban card print icon (blade + `buildCardHtml` parity), details
+> modal header button, per-child print icons in the Contents list, and a
+> new session page `GET /label-print` (`LabelPrintController`, current-team
+> gated like the kanban pages): scan a box uuid → contents grid → touch a
+> row to print its sticker; single (childless) items offer their own label,
+> so any printed sticker re-scans into a printable/station view. Item data
+> stays gated by the existing `GET /kanban/item/{itemId}` (item:read).
 
 ---
 

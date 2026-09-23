@@ -86,6 +86,7 @@ tickets/
 | API-035  | — (user request: location locator stickers, Matthieu 2026-09-21) | Location barcodes — nullable `locations.barcode`, team-scoped 409 incl. trashed (bind shelf locator stickers; app side MV-153) |
 | API-036  | — (user request: show sub-location paths on the web, 2026-09-22) | Location path display — "Garage > Black shelf" across the kanban web surfaces + public share page (web-only, no API change) |
 | API-037  | — (user request: batch the offline push, rate-limited today; client side to be ticketed) | Batch sync — POST api/sync/batch: ordered offline mutations, per-op isolation + receipts, three-way merge (cross-field auto-resolve, same-field conflict to the app) |
+| API-038  | — (user request: DYMO stickers, Matthieu 2026-09-23) | DYMO label printing — vendored framework 2.x, name + uuid (Code128 + QR) labels, print buttons on kanban/details, scan-a-box print station page (web-only) |
 
 Numbering follows the *Suggested order* in server.md (small wins first, then
 the sync work, then operational features); API-013..021 are appended by

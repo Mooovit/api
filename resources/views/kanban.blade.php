@@ -67,6 +67,10 @@
         .management-tab {
             color: #6b7280;
         }
+        /* API-038: DYMO print hooks stay invisible until the shared service
+           detects a LabelWriter on this workstation (body.dymo-ready) */
+        .dymo-print { display: none; }
+        body.dymo-ready .dymo-print { display: inline-flex; }
     </style>
 </head>
 <body class="bg-gradient-to-br from-blue-100 to-indigo-200 min-h-screen flex">
@@ -144,6 +148,10 @@
                     <a href="/kanban/activity" class="sidebar-item w-full flex items-center px-3 py-2 rounded-lg text-sm font-medium text-gray-700 hover:text-indigo-600">
                         <i class="fas fa-history mr-3"></i>
                         Live Activity
+                    </a>
+                    <a href="/label-print" class="sidebar-item w-full flex items-center px-3 py-2 rounded-lg text-sm font-medium text-gray-700 hover:text-indigo-600">
+                        <i class="fas fa-print mr-3"></i>
+                        Label Print Station
                     </a>
                 </div>
             </nav>
@@ -251,6 +259,10 @@
                                             @endif
                                         </div>
                                         <div class="text-xs text-gray-400 flex items-center gap-2">
+                                            {{-- API-038: hidden until DYMO detection succeeds (body.dymo-ready) --}}
+                                            <button onclick="event.stopPropagation(); printItemLabel('{{ $item['id'] }}', this)" title="Print DYMO label" class="dymo-print hover:text-indigo-600">
+                                                <i class="fas fa-print"></i>
+                                            </button>
                                             <button onclick="event.stopPropagation(); showCardQr('{{ $item['id'] }}')" title="Show public share QR" class="hover:text-indigo-600">
                                                 <i class="fas fa-qrcode"></i>
                                             </button>
@@ -695,6 +707,12 @@
     <!-- Vendored QR generator (API-025): davidshimjs/qrcodejs 1.0.0, MIT
          license — vanilla JS, renders SVG/table, no CDN (works on the LAN). -->
     <script src="{{ asset('js/vendor/qrcode.min.js') }}"></script>
+
+    {{-- API-038: DYMO Connect framework 2.x (vendored from the official
+         download.dymo.com build) + the shared label service. Detection runs
+         at page init; print buttons appear only via body.dymo-ready. --}}
+    <script src="{{ asset('js/vendor/dymo.connect.framework.js') }}"></script>
+    <script src="{{ asset('js/dymo.js') }}?v={{ time() }}"></script>
 
     <!-- Custom Kanban JS -->
     {{-- API-036: team location id => "Garage > Black shelf" map — the JS
