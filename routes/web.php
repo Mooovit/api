@@ -3,6 +3,7 @@
 use App\Http\Controllers\ItemController;
 use App\Http\Controllers\KanbanController;
 use App\Http\Controllers\LabelPrintController;
+use App\Http\Controllers\PrintQueueController;
 use App\Http\Controllers\PublicShareController;
 use App\Http\Controllers\BackupSheetController;
 use App\Http\Controllers\BackupScheduleController;
@@ -83,6 +84,20 @@ Route::middleware('auth:sanctum')->group(function () {
     // data itself stays gated by GET /kanban/item/{itemId}.
     Route::get('/label-print', [LabelPrintController::class, 'index'])
         ->name('label-print.index');
+
+    // API-039: server-side print queue — session flavor used by the kanban
+    // page and the /label-print station (they cannot call /api/* — no
+    // stateful session group there; semantics shared via App\PrintQueue with
+    // the token flavor in api.php). GET /print/claim doubles as the station
+    // heartbeat; top-level /print/* paths (no /kanban/{type} collision).
+    Route::post('/print/jobs', [PrintQueueController::class, 'storeJob'])
+        ->name('print.jobs.store');
+    Route::get('/print/claim', [PrintQueueController::class, 'claim'])
+        ->name('print.claim');
+    Route::post('/print/jobs/{jobId}/complete', [PrintQueueController::class, 'complete'])
+        ->name('print.jobs.complete');
+    Route::post('/print/station', [PrintQueueController::class, 'station'])
+        ->name('print.station');
 
     // Generic route must come LAST
     Route::get('/kanban/{type}', [KanbanController::class, 'index']);

@@ -67,10 +67,6 @@
         .management-tab {
             color: #6b7280;
         }
-        /* API-038: DYMO print hooks stay invisible until the shared service
-           detects a LabelWriter on this workstation (body.dymo-ready) */
-        .dymo-print { display: none; }
-        body.dymo-ready .dymo-print { display: inline-flex; }
     </style>
 </head>
 <body class="bg-gradient-to-br from-blue-100 to-indigo-200 min-h-screen flex">
@@ -259,8 +255,8 @@
                                             @endif
                                         </div>
                                         <div class="text-xs text-gray-400 flex items-center gap-2">
-                                            {{-- API-038: hidden until DYMO detection succeeds (body.dymo-ready) --}}
-                                            <button onclick="event.stopPropagation(); printItemLabel('{{ $item['id'] }}', this)" title="Print DYMO label" class="dymo-print hover:text-indigo-600">
+                                            {{-- API-039: always visible — queues a label job, no local DYMO needed --}}
+                                            <button onclick="event.stopPropagation(); printItemLabel('{{ $item['id'] }}', this)" title="Queue DYMO label" class="hover:text-indigo-600">
                                                 <i class="fas fa-print"></i>
                                             </button>
                                             <button onclick="event.stopPropagation(); showCardQr('{{ $item['id'] }}')" title="Show public share QR" class="hover:text-indigo-600">

@@ -1,5 +1,6 @@
 /*
- * Dymo — label printing service for DYMO LabelWriter printers (API-038).
+ * Dymo — label printing service for DYMO LabelWriter printers (API-038,
+ * queue-ified in API-039).
  *
  * Talks to the DYMO Connect desktop app through the vendored framework 2.x
  * (public/js/vendor/dymo.connect.framework.js, official build from
@@ -10,19 +11,27 @@
  * Code128 AND QR Code (mirrors the API-028 identity-QR convention: either
  * symbology scanned back resolves via GET /kanban/item/{uuid}).
  *
- * Detection is a cached promise kicked off at page init; every UI hook is
- * CSS-gated on body.dymo-ready so buttons only appear when a LabelWriter
- * is actually present. Printer + label template choices are localStorage
- * prefs — they belong to the workstation (the physically attached printer),
- * not to the team or user.
+ * API-039: all printing goes through the SERVER queue. UI surfaces only
+ * push jobs (POST /print/jobs); any page on a workstation with a detected
+ * LabelWriter declares itself a print station (localStorage `dymo.station`
+ * client id + POST /print/station) and runs the queue worker — a claim
+ * poll every 2s that prints drained jobs through printItem() and posts the
+ * outcome. The worker pauses while the tab is hidden (a hidden tab stops
+ * heart-beating, so its station correctly goes dead server-side).
+ *
+ * Printer + label template choices are localStorage prefs — they belong to
+ * the workstation (the physically attached printer), not to the team or
+ * user.
  */
 window.Dymo = (function () {
     'use strict';
 
     const LS_PRINTER = 'dymo.printer';
     const LS_TEMPLATE = 'dymo.template';
+    const LS_STATION = 'dymo.station';
     const DEFAULT_TEMPLATE = '30334';
     const DETECT_TIMEOUT_MS = 5000;
+    const POLL_MS = 2000;
 
     /*
      * Label templates. Geometry in twips (1440/inch). DrawCommands use the
@@ -233,13 +242,129 @@ window.Dymo = (function () {
         return printer;
     }
 
-    /* Serialized jobs — the print station's touch-to-print fires faster than
-       the printer drains, and DYMO Connect queues per job cleanly in order */
+    /* Serialized jobs — the queue worker prints one job per tick; keep the
+       chain anyway so a burst of jobs can't overlap on the web service */
     let queue = Promise.resolve();
     function printItemQueued(name, uuid, opts) {
         const job = queue.then(function () { return printItem(name, uuid, opts); });
         queue = job.catch(function () {});
         return job;
+    }
+
+    /* ---- Server queue (API-039): station identity + worker ---- */
+
+    function csrfToken() {
+        const meta = document.querySelector('meta[name="csrf-token"]');
+        return meta ? meta.getAttribute('content') : '';
+    }
+
+    async function postJson(url, body) {
+        const res = await fetch(url, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': csrfToken()
+            },
+            body: JSON.stringify(body)
+        });
+        if (!res.ok) {
+            let message = res.status + ' ' + res.statusText;
+            try {
+                const payload = await res.json();
+                if (payload && payload.error) message = payload.error;
+            } catch (e) { /* non-JSON body — keep the status text */ }
+            const err = new Error(message);
+            err.status = res.status;
+            throw err;
+        }
+        try { return await res.json(); } catch (e) { return {}; }
+    }
+
+    /* Browser-local station identity: stable across reloads, upserted
+       server-side on [team, client_id]. Generated on first use. */
+    function getStationId() {
+        let id = localStorage.getItem(LS_STATION);
+        if (!id) {
+            id = (window.crypto && crypto.randomUUID)
+                ? crypto.randomUUID()
+                : 'stn-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+            localStorage.setItem(LS_STATION, id);
+        }
+        return id;
+    }
+
+    /* Declare/refresh this workstation's printer with the server queue.
+       Best-effort: pages still print locally-side (via the worker's claim
+       loop) even if a declaration tick fails. */
+    function declareStation() {
+        return postJson('/print/station', {
+            client_id: getStationId(),
+            printer_name: getPrinter(),
+            template: getTemplate()
+        }).then(function () { return true; }).catch(function () { return false; });
+    }
+
+    let workerTimer = null;
+    let printing = false;
+
+    /* One worker tick: heart-beat + claim → print → report. The claim's
+       query params carry the CURRENT printer/template prefs, so changing
+       the station selects re-targets the station on the next poll. */
+    async function workerTick() {
+        if (document.visibilityState !== 'visible' || printing) return;
+        printing = true;
+        try {
+            const params = new URLSearchParams({
+                client_id: getStationId(),
+                printer_name: getPrinter(),
+                template: getTemplate()
+            });
+            const res = await fetch('/print/claim?' + params.toString(), {
+                credentials: 'same-origin',
+                headers: { 'Accept': 'application/json' }
+            });
+            if (!res.ok) return;
+            const data = await res.json();
+            if (!data || !data.job) return;
+
+            const job = data.job;
+            let ok = true;
+            let errorText = null;
+            try {
+                await printItem(job.item_name, job.item_id, {
+                    template: job.template,
+                    printer: job.target_printer || undefined
+                });
+            } catch (e) {
+                ok = false;
+                errorText = (e && e.message) ? e.message : 'print failed';
+            }
+
+            try {
+                await postJson('/print/jobs/' + encodeURIComponent(job.id) + '/complete', {
+                    client_id: getStationId(),
+                    ok: ok,
+                    error: errorText
+                });
+            } catch (e) { /* the stale-claim reclaim covers a lost report */ }
+
+            document.dispatchEvent(new CustomEvent(ok ? 'dymo:job-printed' : 'dymo:job-failed', {
+                detail: job
+            }));
+        } catch (e) { /* server unreachable — retry on the next tick */ }
+        finally {
+            printing = false;
+        }
+    }
+
+    /* Start polling (idempotent). Only meaningful after a successful
+       detect() — callers gate this on det.ready. */
+    function startQueueWorker() {
+        if (workerTimer) return;
+        workerTimer = setInterval(workerTick, POLL_MS);
+        workerTick();
     }
 
     return {
@@ -253,6 +378,9 @@ window.Dymo = (function () {
         TEMPLATES: TEMPLATES,
         buildLabelXml: buildLabelXml,
         printItem: printItem,
-        printItemQueued: printItemQueued
+        printItemQueued: printItemQueued,
+        getStationId: getStationId,
+        declareStation: declareStation,
+        startQueueWorker: startQueueWorker
     };
 })();

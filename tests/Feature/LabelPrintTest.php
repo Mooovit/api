@@ -10,13 +10,13 @@ use Tests\Concerns\InteractsWithApi;
 use Tests\TestCase;
 
 /**
- * API-038 — the /label-print print station page (session web surface):
+ * API-038/039 — the /label-print print station page (session web surface):
  * auth gating, team scoping, and that the page ships the DYMO printing
- * assets plus the kanban board's print hooks. The actual printing runs
- * client-side in the browser (vendored DYMO Connect framework +
- * public/js/dymo.js against the workstation's DYMO Connect service) and
- * cannot be exercised here — the ticket carries the manual hardware
- * checklist.
+ * assets plus the kanban board's queue-push print hooks. The actual printing
+ * runs client-side in the browser (vendored DYMO Connect framework +
+ * public/js/dymo.js against the workstation's DYMO Connect service, fed by
+ * the API-039 server queue) and cannot be exercised here — the ticket
+ * carries the manual hardware checklist.
  */
 class LabelPrintTest extends TestCase
 {
@@ -66,14 +66,16 @@ class LabelPrintTest extends TestCase
         $status = Status::factory()->onTeam($team)->create();
         $item = Item::factory()->onTeam($team)->withStatus($status)->create();
 
+        /* API-039: buttons are always visible (queue push needs no local
+           DYMO) — the .dymo-print CSS gate is gone */
         $this->actingAsFresh($user)->get('/kanban/status')
             ->assertOk()
-            ->assertSee('dymo-print')
             ->assertSee('printItemLabel')
+            ->assertDontSee('.dymo-print { display: none; }', false)
             ->assertSee('js/dymo.js')
             ->assertSee('Label Print Station');
 
-        /* The server-rendered card itself carries the print button */
+        /* The server-rendered card itself carries the queue-push button */
         $this->actingAsFresh($user)->get('/kanban/status')
             ->assertSee('printItemLabel(\'' . $item->id . '\', this)', false);
     }

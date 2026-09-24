@@ -1,9 +1,11 @@
 /*
- * Label print station (API-038) — scan a box uuid, list the contents,
- * touch a row to print its DYMO sticker. All printing goes through the
- * shared window.Dymo service (public/js/dymo.js); item data comes from
- * the existing session endpoint GET /kanban/item/{itemId} (item +
- * children). Plain global JS, same conventions as kanban.js.
+ * Label print station (API-038, queue-ified in API-039) — scan a box uuid,
+ * list the contents, touch a row to print its DYMO sticker. Touching a row
+ * PUSHES a job to the server queue (POST /print/jobs); the shared window.Dymo
+ * service (public/js/dymo.js) declares this workstation as a print station
+ * and runs the claim worker that actually prints. Item data comes from the
+ * existing session endpoint GET /kanban/item/{itemId} (item + children).
+ * Plain global JS, same conventions as kanban.js.
  */
 
 /* ---------- tiny helpers ---------- */
@@ -51,6 +53,10 @@ async function initDymoStation() {
         const prefs = document.getElementById('dymoPrefs');
         prefs.classList.remove('hidden');
         prefs.classList.add('flex');
+
+        /* API-039: declare this workstation to the queue, then drain it */
+        Dymo.declareStation();
+        Dymo.startQueueWorker();
     }
 }
 
@@ -159,6 +165,7 @@ function renderBox(data) {
 
 function rowMarkup(child) {
     return '<div class="print-row bg-white/90 rounded-xl shadow p-4 flex items-center justify-between gap-3" ' +
+        'data-item-id="' + escapeHtml(child.id) + '" ' +
         'onclick="printRow(\'' + child.id + '\', this)">' +
         '  <div class="min-w-0">' +
         '    <div class="font-medium text-gray-800 truncate">' + escapeHtml(child.name) + '</div>' +
@@ -170,30 +177,65 @@ function rowMarkup(child) {
         '</div>';
 }
 
-/* ---------- touch-to-print ---------- */
+/* ---------- touch-to-print (API-039: push to the server queue) ---------- */
+
+function csrfToken() {
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    return meta ? meta.getAttribute('content') : '';
+}
+
+function setRowState(itemId, state) {
+    const row = document.querySelector('.print-row[data-item-id="' + itemId + '"]');
+    if (!row) return;
+    const stateEl = row.querySelector('.row-state');
+    row.classList.remove('state-printing', 'state-printed', 'state-failed');
+    if (state === 'printing' && stateEl) {
+        row.classList.add('state-printing');
+        stateEl.innerHTML = '<i class="fas fa-spinner fa-spin text-amber-500"></i><span class="text-amber-600">Printing&hellip;</span>';
+    } else if (state === 'printed' && stateEl) {
+        row.classList.add('state-printed');
+        stateEl.innerHTML = '<i class="fas fa-circle-check text-green-600"></i><span class="text-green-700">Printed</span>';
+    } else if (state === 'failed' && stateEl) {
+        row.classList.add('state-failed');
+        stateEl.innerHTML = '<i class="fas fa-circle-exclamation text-red-600"></i><span class="text-red-700">Failed</span>';
+    } else if (state === 'reset' && stateEl) {
+        stateEl.innerHTML = '<i class="fas fa-print"></i><span>Print</span>';
+    }
+}
 
 /* itemId only (uuids are inline-safe); the display name comes from the
    renderBox registry, never from interpolated strings */
-function printRow(itemId, el) {
-    const row = el ? el.closest('.print-row') : null;
+async function printRow(itemId, el) {
     const itemName = currentItems[itemId] || itemId;
-    const stateEl = row ? row.querySelector('.row-state') : null;
 
-    if (row) {
-        row.classList.remove('state-printed', 'state-failed');
-        row.classList.add('state-printing');
-        if (stateEl) stateEl.innerHTML = '<i class="fas fa-spinner fa-spin text-amber-500"></i><span class="text-amber-600">Printing&hellip;</span>';
+    setRowState(itemId, 'printing');
+
+    try {
+        await axios.post('/print/jobs', { item: itemId, template: Dymo.getTemplate() }, {
+            headers: { 'X-CSRF-TOKEN': csrfToken(), 'Accept': 'application/json' }
+        });
+        notify('Label queued for "' + itemName + '"', 'success');
+        /* the row flips to Printed/Failed when the worker drains the job —
+           see the dymo:job-* listeners below */
+    } catch (error) {
+        setRowState(itemId, 'failed');
+        const reason = (error.response && error.response.data && error.response.data.error)
+            ? error.response.data.error
+            : 'could not queue the label';
+        notify('Queue failed: ' + reason, 'error');
     }
-
-    Dymo.printItemQueued(itemName, itemId).then(function () {
-        if (stateEl) stateEl.innerHTML = '<i class="fas fa-circle-check text-green-600"></i><span class="text-green-700">Printed</span>';
-        if (row) { row.classList.remove('state-printing'); row.classList.add('state-printed'); }
-    }).catch(function (error) {
-        if (stateEl) stateEl.innerHTML = '<i class="fas fa-circle-exclamation text-red-600"></i><span class="text-red-700">Failed</span>';
-        if (row) { row.classList.remove('state-printing'); row.classList.add('state-failed'); }
-        notify('Print failed: ' + (error && error.message ? error.message : 'unknown error'), 'error');
-    });
 }
+
+/* The station's own worker (window.Dymo) printed/failed a claimed job —
+   flip any matching row of this box. Events only fire in the tab whose
+   worker claimed the job; a job drained by another station's tab leaves
+   the row in the printing state (acceptable v1). */
+document.addEventListener('dymo:job-printed', function (e) {
+    if (e.detail && e.detail.item_id) setRowState(e.detail.item_id, 'printed');
+});
+document.addEventListener('dymo:job-failed', function (e) {
+    if (e.detail && e.detail.item_id) setRowState(e.detail.item_id, 'failed');
+});
 
 /* ---------- bootstrap ---------- */
 

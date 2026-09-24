@@ -333,7 +333,7 @@ function buildCardHtml(row) {
                                             </span>` : ''}
                                         </div>
                                         <div class="text-xs text-gray-400 flex items-center gap-2">
-                                            <button onclick="event.stopPropagation(); printItemLabel('${row.id}', this)" title="Print DYMO label" class="dymo-print hover:text-indigo-600">
+                                            <button onclick="event.stopPropagation(); printItemLabel('${row.id}', this)" title="Queue DYMO label" class="hover:text-indigo-600">
                                                 <i class="fas fa-print"></i>
                                             </button>
                                             <button onclick="event.stopPropagation(); showCardQr('${row.id}')" title="Show public share QR" class="hover:text-indigo-600">
@@ -636,7 +636,7 @@ function displayEnhancedItemDetails(data) {
                         <button onclick="openMoveItemModal()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded-lg text-sm font-medium transition">
                             <i class="fas fa-arrows-alt mr-1"></i>Move
                         </button>
-                        <button onclick="printItemLabel('${data.item.id}', this)" class="dymo-print bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1 rounded-lg text-sm font-medium transition" title="Print DYMO label">
+                        <button onclick="printItemLabel('${data.item.id}', this)" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1 rounded-lg text-sm font-medium transition" title="Queue DYMO label">
                             <i class="fas fa-print mr-1"></i>Print label
                         </button>
                     </div>
@@ -730,7 +730,7 @@ function displayEnhancedItemDetails(data) {
                                 <div class="flex items-center justify-between">
                                     <div class="font-medium text-gray-800">${child.name}</div>
                                     <div class="flex items-center gap-2 text-xs text-gray-400">
-                                        <button onclick="event.stopPropagation(); printItemLabel('${child.id}', this)" title="Print DYMO label" class="dymo-print hover:text-indigo-600">
+                                        <button onclick="event.stopPropagation(); printItemLabel('${child.id}', this)" title="Queue DYMO label" class="hover:text-indigo-600">
                                             <i class="fas fa-print"></i>
                                         </button>
                                         <i class="fas fa-external-link-alt"></i>
@@ -1702,25 +1702,35 @@ let currentShareUrl = null;
  * ensures the item has an active public link (creates it on the fly via
  * POST /kanban/item/{id}/share) and opens the QR modal.
  */
-/* API-038: print one DYMO sticker (name + uuid as Code128 + QR) for an item.
-   The uuid comes from the caller (card/modal markup — ids are inline-safe);
-   the display name is resolved from the surrounding DOM, never from
-   interpolated strings. The button is only visible after the shared Dymo
-   service detects a LabelWriter (body.dymo-ready), but the handler still
-   guards so a stale click fails with a message instead of silently. */
+/* API-039: queue one DYMO sticker for an item. The button only PUSHES a job
+   to the server queue (POST /print/jobs) — any declared print station (this
+   tab included, via the shared Dymo worker) drains and prints it. The uuid
+   comes from the caller (card/modal markup — ids are inline-safe); the
+   server resolves the item name at claim time, so no DOM lookup is needed.
+   Works without a local DYMO — that's the point of the queue. */
 async function printItemLabel(itemId, el) {
-    if (!itemId || !window.Dymo) return;
-
-    const card = el ? el.closest('.kanban-item') : null;
-    const name = (card && card.querySelector('.font-medium'))
-        ? card.querySelector('.font-medium').textContent.trim()
-        : (document.getElementById('detailsItemName')?.textContent.trim() || itemId);
+    if (!itemId) return;
 
     try {
-        await window.Dymo.printItemQueued(name, itemId);
-        showNotification('Label sent to printer', 'success');
+        await axios.post('/print/jobs', {
+            item: itemId,
+            template: window.Dymo ? window.Dymo.getTemplate() : '30334'
+        }, {
+            headers: {
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            }
+        });
+        showNotification('Label queued for printing', 'success');
     } catch (error) {
-        showNotification('Print failed: ' + (error && error.message ? error.message : 'unknown error'), 'error');
+        if (error.response?.status === 409) {
+            showNotification(error.response.data?.error || 'Printer not available', 'error');
+        } else if (error.response?.status === 404) {
+            showNotification('Item not found', 'error');
+        } else {
+            showNotification('Could not queue the label', 'error');
+        }
     }
 }
 
@@ -2056,10 +2066,16 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // API-038: one DYMO detection round trip per page load — on success the
-    // service tags body.dymo-ready and every .dymo-print button appears
+    // API-038/039: one DYMO detection round trip per page load. On success
+    // this tab becomes a print station: it declares its printer to the
+    // server queue and starts the claim worker that prints queued jobs.
     if (window.Dymo) {
-        window.Dymo.detect();
+        window.Dymo.detect().then(function (det) {
+            if (det.ready) {
+                window.Dymo.declareStation();
+                window.Dymo.startQueueWorker();
+            }
+        });
     }
 });
 

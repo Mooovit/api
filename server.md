@@ -339,6 +339,7 @@ answer in one integer.
 > | status:read / status:write | ✓ |
 > | location:read / location:write | ✓ |
 > | label:read / label:write | ✓ |
+> | print:write (API-039) | ✓ |
 > | account/settings abilities | ✗ |
 >
 > **Enrollment codes (2026-09, API-017)** — the password-free enrollment path:
@@ -743,6 +744,50 @@ the fleet.
 > row to print its sticker; single (childless) items offer their own label,
 > so any printed sticker re-scans into a printable/station view. Item data
 > stays gated by the existing `GET /kanban/item/{itemId}` (item:read).
+>
+> **Server-side DYMO print queue (API-039, 2026-09-24)** — API-038's
+> client-only path is replaced by a server-mediated queue: ANY client (web
+> kanban, /label-print station, or the app) POSTs a job; browsers/workstations
+> with a real DYMO attached declare themselves as *print stations* and drain
+> the queue by polling. Two tables: `print_stations` (team + browser-local
+> `client_id` uuid upserted on [team_id, client_id]; `printer_name`, optional
+> `label`/`template`, `last_seen_at` heartbeat) and `print_jobs` (team, user,
+> item, `template`, nullable `target_printer` — NULL = first claimer wins —
+> `status` pending/claimed/printed/failed, `claimed_by`/`claimed_at`,
+> `completed_at`, `error`, `attempts`). Both are NOT revision-observed
+> (printing plumbing, sync_batches precedent — queue writes bump nothing) and
+> jobs are never deleted (audit trail; a deleted item cascades its pending
+> jobs). Semantics (all in `App\Support\PrintQueue`): liveness = heartbeat
+> within **90 s** (the ~2 s poll doubles as heartbeat; a hidden tab pauses its
+> poll and correctly goes dead); a **targeted** push (`target_printer` set)
+> with no live station serving that printer name is rejected **409**
+> `{"error": "Printer \"X\" is not available"}` — untargeted pushes always
+> enqueue; claiming is FIFO by created_at with jobs targeted at the claiming
+> station's printer first, made atomic by a conditional single-row UPDATE
+> (affected-rows === 1 ⇒ owner) so two stations can never take the same job;
+> a claim older than **300 s** is reclaimed (owner died mid-print); a failed
+> print goes back to pending until **3 attempts**, then terminal `failed` with
+> the error kept; completion from a non-owner station is a no-op
+> (`success: false`), not an error. Routes, two flavors of the same contract:
+> token API — `POST api/print/jobs` (team `item:write` permission AND the new
+> **`print:write`** token ability; template whitelist 422; cross-team item
+> 404; dead target 409) and `GET api/print/stations` (`item:read` +
+> `print:write`, live stations only, for the app's printer picker); session
+> web — `POST /print/jobs` (item:write), `GET /print/claim?client_id&
+> printer_name&…` (item:read; doubles as heartbeat; response carries the
+> print-ready payload `{job: {id, item_id, item_name, template,
+> target_printer}}` or `{job: null}` so the station never re-fetches the
+> item), `POST /print/jobs/{id}/complete` (item:read), `POST /print/station`
+> (item:read). The item NAME is snapshotted at claim time — a rename between
+> enqueue and print prints the old name (accepted). Frontend: `dymo.js` gains
+> a persistent station identity (`localStorage dymo.station`), `declareStation()`
+> and a `startQueueWorker()` 2 s claim-poll loop (paused when the tab is
+> hidden or a print is in flight); kanban print buttons and the /label-print
+> rows now queue-push instead of printing locally — a kanban tab on a
+> printer-equipped machine drains the queue too; the API-038 `.dymo-print`
+> CSS gate is gone (buttons always visible — queuing needs no local DYMO).
+> Note: `print:write` gates only the token flavor; the session web flavor
+> relies on team permissions (session requests carry no ability list).
 
 ---
 
