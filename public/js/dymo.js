@@ -62,7 +62,7 @@ window.Dymo = (function () {
     const REASONS = {
         'framework-missing': 'DYMO framework script not loaded',
         'service-unreachable': 'DYMO Connect not running (or blocked) on this computer',
-        'no-printer': 'No DYMO LabelWriter printer found',
+        'no-printer': 'No DYMO LabelWriter printer in DYMO Connect (add/power the printer, then re-check)',
         'framework-error': 'DYMO framework failed to initialize'
     };
 
@@ -90,7 +90,11 @@ window.Dymo = (function () {
             }
 
             try {
-                fw.checkEnvironment(function (env) {
+                /* init() — NOT bare checkEnvironment(): only init constructs
+                 * the framework (chooseEnvironment → DlsWebService). Printer
+                 * enumeration before that throws synchronously and used to
+                 * surface as 'framework-error' instead of 'no-printer'. */
+                fw.init(function (env) {
                     if (!env || !env.isWebServicePresent) {
                         return finish({ ready: false, reason: 'service-unreachable', printers: [] });
                     }

@@ -102,6 +102,14 @@ buttons hidden without the DYMO service running.
   DYMO Connect desktop service serves plain http on 127.0.0.1:41951 (no TLS
   listener), so the https StatusConnected probe always failed. Both script
   includes bumped to `?v=2` to bust stale cached copies on workstations.
+- Follow-up fix 2 (hardware smoke): detection now uses `init()` instead of
+  bare `checkEnvironment()`. Only `init()` constructs the framework
+  (chooseEnvironment → DlsWebService); enumerating printers before that
+  throws synchronously, so a healthy service with an empty printer list was
+  misreported as "framework failed to initialize" instead of "no printer".
+  The no-printer reason text now names the remedy (add/power the printer in
+  DYMO Connect, then re-check). `dymo.js` cache-buster bumped (`?v=2`; the
+  kanban page already busts via `?v={{ time() }}`).
 
 ### Files touched
 - new: `public/js/vendor/dymo.connect.framework.js`, `public/js/dymo.js`,
