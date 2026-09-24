@@ -711,7 +711,8 @@
     {{-- API-038: DYMO Connect framework 2.x (vendored from the official
          download.dymo.com build) + the shared label service. Detection runs
          at page init; print buttons appear only via body.dymo-ready. --}}
-    <script src="{{ asset('js/vendor/dymo.connect.framework.js') }}"></script>
+    {{-- v2 = WS_PROTOCOL forced to http (the local DYMO service has no TLS) --}}
+    <script src="{{ asset('js/vendor/dymo.connect.framework.js') }}?v=2"></script>
     <script src="{{ asset('js/dymo.js') }}?v={{ time() }}"></script>
 
     <!-- Custom Kanban JS -->

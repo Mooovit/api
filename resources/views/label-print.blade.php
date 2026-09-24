@@ -13,7 +13,7 @@
     <!-- Axios for API calls -->
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <!-- DYMO Connect framework 2.x (vendored, API-038) + shared service -->
-    <script src="{{ asset('js/vendor/dymo.connect.framework.js') }}"></script>
+    <script src="{{ asset('js/vendor/dymo.connect.framework.js') }}?v=2"></script>
     <script src="{{ asset('js/dymo.js') }}?v=1"></script>
     <style>
         body {

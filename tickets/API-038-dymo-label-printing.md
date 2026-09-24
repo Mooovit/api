@@ -97,6 +97,11 @@ buttons hidden without the DYMO service running.
   scan-to-load via existing `GET /kanban/item/{itemId}`, touch-to-print
   contents grid with per-row state, box's own label button; childless items
   offer their own label (any sticker re-scans into the station).
+- Follow-up fix (hardware smoke): the vendored build's single `WS_PROTOCOL`
+  declaration forced `"https://"` → `"http://"` (commented in-file) — the
+  DYMO Connect desktop service serves plain http on 127.0.0.1:41951 (no TLS
+  listener), so the https StatusConnected probe always failed. Both script
+  includes bumped to `?v=2` to bust stale cached copies on workstations.
 
 ### Files touched
 - new: `public/js/vendor/dymo.connect.framework.js`, `public/js/dymo.js`,
@@ -112,6 +117,7 @@ buttons hidden without the DYMO service running.
 vendor/bin/phpunit --filter LabelPrintTest  → PASS, 4 tests, 16 assertions
 vendor/bin/phpunit                          → PASS, 457 tests (4 pre-existing Jetstream skips)
 node --check public/js/{dymo,label-print,kanban}.js → syntax OK
+node --check public/js/vendor/dymo.connect.framework.js → syntax OK (post http-patch)
 ```
 
 ### Commits
