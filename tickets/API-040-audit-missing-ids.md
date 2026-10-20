@@ -130,14 +130,13 @@ NODE_OPTIONS=--openssl-legacy-provider npm run dev              → Compiled Suc
 ```
 
 ### Commits
-- *(pending — see Notes for reviewer)*
+- `ee5ae3f` API-040(feat): audit reports carry missing_ids — dashboard lists
+  them (branch `api-040-audit-missing-ids`, pushed)
 
 ### Notes for reviewer
-- Not yet committed: the branch `api-039-print-queue` also carries the
-  uncommitted web-audit-page slice plus unrelated dirty files
-  (`public/js/dymo.js`, kanban/label-print blades, …); committing here
-  would mix concerns. Suggested: land/commit the audits-page slice first,
-  then a clean `api-040-audit-missing-ids` branch for this ticket.
+- The commit also carries the unticketed 2026-10-18 web-audit-page slice
+  (route, page, nav, dashboard link) — same files, inseparable once the
+  missing list landed in the same page; flagged here rather than split.
 - Contract notes: `missing_ids` is purely additive on the request body and
   the stored payload; `GET api/location/:id/audits` returns the raw payload
   so clients get the list with no endpoint change; the activity-feed
