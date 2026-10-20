@@ -12,9 +12,9 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <!-- Axios for API calls -->
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
-    <!-- DYMO Connect framework 2.x (vendored, API-038) + shared service (v3 = API-039 queue worker) -->
+    <!-- DYMO Connect framework 2.x (vendored, API-038) + shared service (v4 = API-039 queue worker) -->
     <script src="{{ asset('js/vendor/dymo.connect.framework.js') }}?v=2"></script>
-    <script src="{{ asset('js/dymo.js') }}?v=3"></script>
+    <script src="{{ asset('js/dymo.js') }}?v=4"></script>
     <style>
         body {
             font-family: system-ui, -apple-system, sans-serif;

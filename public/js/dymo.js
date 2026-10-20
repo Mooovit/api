@@ -107,7 +107,13 @@ window.Dymo = (function () {
                     if (!env || !env.isWebServicePresent) {
                         return finish({ ready: false, reason: 'service-unreachable', printers: [] });
                     }
-                    fw.getLabelWriterPrintersAsync().then(function (printers) {
+                    /* The framework resolves goog.Promise (Closure) — it has
+                     * .then but NO .catch, so adapt to a native promise
+                     * before chaining (a raw .then().catch() threw
+                     * TypeError inside the framework's XHR callback). */
+                    new Promise(function (resolve, reject) {
+                        fw.getLabelWriterPrintersAsync().then(resolve, reject);
+                    }).then(function (printers) {
                         const names = (printers || []).map(function (p) { return p.name; });
                         if (!names.length) {
                             return finish({ ready: false, reason: 'no-printer', printers: [] });

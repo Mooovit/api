@@ -8,6 +8,7 @@ use App\Http\Controllers\PublicShareController;
 use App\Http\Controllers\BackupSheetController;
 use App\Http\Controllers\BackupScheduleController;
 use App\Http\Controllers\BackupsController;
+use App\Http\Controllers\AuditsController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DevicesController;
 use App\Http\Controllers\TeamS3SettingsController;
@@ -137,6 +138,11 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
         ->name('backups.download');
     Route::delete('/teams/{team}/backups/{backup}', [BackupsController::class, 'destroy'])
         ->name('backups.destroy');
+
+    // Audit results (API-010) — read-only server UI for the MV-050 stocktake
+    // snapshots (same team authorization pattern as the backups block).
+    Route::get('/teams/{team}/audits', [AuditsController::class, 'index'])
+        ->name('audits.index');
 });
 
 // Devices (API-012/017) — server UI: token mint (plain text flashed once),

@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Http\Controllers\DeviceTokenController;
+use App\Models\Audit;
 use App\Models\EnrollmentCode;
 use App\Models\Item;
 use App\Models\Location;
@@ -15,9 +16,9 @@ use Tests\TestCase;
 
 /**
  * The management UI, user-level half (session-auth web routes): the
- * dashboard overview (team stats, latest items, savepoint stack state)
- * and the devices page (token mint with the plain text shown exactly
- * once, fleet list, revoke, enrollment codes).
+ * dashboard overview (team stats, latest items, latest audits, savepoint
+ * stack state) and the devices page (token mint with the plain text shown
+ * exactly once, fleet list, revoke, enrollment codes).
  */
 class ManagementUiTest extends TestCase
 {
@@ -52,14 +53,27 @@ class ManagementUiTest extends TestCase
             'changed_at' => now()->subHour(),
         ]);
 
+        /* The latest stocktakes with their result, newest first */
+        Audit::factory()->atLocation($location, $user)->create([
+            'found_count' => 12,
+            'missing_count' => 3,
+            'extra_count' => 2,
+        ]);
+        Audit::factory()->atLocation($location, $user)->create([
+            'found_count' => 7,
+            'created_at' => now()->subHour(),
+        ]);
+
         /* Foreign team data must not leak into the overview */
         [$foreign, $foreignTeam] = $this->newUserWithTeam();
         Item::factory()->onTeam($foreignTeam)->create(['name' => 'Foreign item']);
+        $foreignLocation = Location::factory()->onTeam($foreignTeam)->create(['name' => 'Foreign shelf']);
+        Audit::factory()->atLocation($foreignLocation)->create();
 
         $this->actingAsWeb($user)
             ->get('/dashboard')
             ->assertOk()
-            ->assertInertia(function ($page) use ($team, $item) {
+            ->assertInertia(function ($page) use ($team, $item, $user) {
                 $page->component('Dashboard')
                     ->where('team.id', $team->id)
                     ->where('revision', $team->fresh()->revision)
@@ -70,6 +84,14 @@ class ManagementUiTest extends TestCase
                     ->where('items.0.name', 'Pallet jack')
                     ->where('items.0.status', 'In stock')
                     ->where('items.0.location', 'Shelf A')
+                    ->where('audits.0.location', 'Shelf A')
+                    ->where('audits.0.user', $user->name)
+                    ->where('audits.0.found_count', 12)
+                    ->where('audits.0.missing_count', 3)
+                    ->where('audits.0.extra_count', 2)
+                    ->where('audits.1.found_count', 7)
+                    ->where('audits.1.missing_count', 0)
+                    ->has('audits', 2)
                     ->has('last_activity_at')
                     ->missing('last_backup.id')
                     ->where('schedule', null)
@@ -78,6 +100,7 @@ class ManagementUiTest extends TestCase
 
         $content = $this->get('/dashboard')->getContent();
         $this->assertStringNotContainsString('Foreign item', $content);
+        $this->assertStringNotContainsString('Foreign shelf', $content);
     }
 
     public function test_dashboard_requires_authentication(): void
@@ -271,5 +294,150 @@ class ManagementUiTest extends TestCase
     {
         $this->get('/devices')->assertRedirect(route('login'));
         $this->post('/devices/tokens', ['name' => 'X'])->assertRedirect(route('login'));
+    }
+
+    public function test_audits_page_lists_results_with_decoded_payload(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $location = Location::factory()->onTeam($team)->create(['name' => 'Shelf A']);
+        $item = Item::factory()->onTeam($team)->create(['name' => 'Pallet jack']);
+        $extraItem = Item::factory()->onTeam($team)->create(['name' => 'Mystery box']);
+        $missingItem = Item::factory()->onTeam($team)->create(['name' => 'Lost crate']);
+        $trashedMissing = Item::factory()->onTeam($team)->create(['name' => 'Binned crate']);
+        $trashedMissing->delete();
+
+        Audit::factory()->atLocation($location, $user)->create([
+            'found_count' => 1,
+            'extra_count' => 1,
+            'missing_count' => 2,
+            'payload' => [
+                'found_ids' => [$item->id],
+                'extra' => [['id' => $extraItem->id]],
+                'unknown_codes' => ['NOPE999'],
+                'missing_ids' => [$missingItem->id, $trashedMissing->id],
+            ],
+        ]);
+
+        $this->actingAsWeb($user)
+            ->get("/teams/{$team->id}/audits")
+            ->assertOk()
+            ->assertInertia(function ($page) use ($team, $item, $extraItem, $location, $user) {
+                $page->component('Audits/Index')
+                    ->where('team.id', $team->id)
+                    ->where('audits.data.0.location.id', $location->id)
+                    ->where('audits.data.0.user.id', $user->id)
+                    ->where('audits.data.0.found_count', 1)
+                    ->where('audits.data.0.missing_count', 2)
+                    ->where('audits.data.0.extra_count', 1)
+                    ->where('audits.data.0.unknown_count', 1)
+                    ->where('audits.data.0.found.0.name', 'Pallet jack')
+                    ->where('audits.data.0.found.0.id', $item->id)
+                    ->where('audits.data.0.extra.0.name', 'Mystery box')
+                    ->where('audits.data.0.extra.0.id', $extraItem->id)
+                    ->where('audits.data.0.missing.0.name', 'Lost crate')
+                    ->where('audits.data.0.missing.1.name', 'Binned crate')
+                    ->where('audits.data.0.missing.1.deleted', true)
+                    ->where('audits.data.0.unknown_codes.0', 'NOPE999')
+                    ->has('audits.data', 1)
+                    ->has('locations', 1);
+            });
+    }
+
+    public function test_audits_page_legacy_payload_keeps_the_count_only_note(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $location = Location::factory()->onTeam($team)->create();
+
+        /* An audit from before missing_ids existed: payload has no list */
+        Audit::factory()->atLocation($location, $user)->create([
+            'found_count' => 1,
+            'missing_count' => 4,
+            'payload' => [
+                'found_ids' => [],
+                'extra' => [],
+                'unknown_codes' => [],
+            ],
+        ]);
+
+        $this->actingAsWeb($user)
+            ->get("/teams/{$team->id}/audits")
+            ->assertOk()
+            ->assertInertia(function ($page) {
+                $page->component('Audits/Index')
+                    ->has('audits.data', 1)
+                    ->where('audits.data.0.missing', [])
+                    ->where('audits.data.0.missing_count', 4);
+            });
+    }
+
+    public function test_audits_page_scopes_to_team_and_keeps_trashed_items(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $location = Location::factory()->onTeam($team)->create();
+        $trashed = Item::factory()->onTeam($team)->create(['name' => 'Gone item']);
+        $trashed->delete();
+
+        Audit::factory()->atLocation($location, $user)->create([
+            'found_count' => 1,
+            'payload' => [
+                'found_ids' => [$trashed->id],
+                'extra' => [],
+                'unknown_codes' => [],
+            ],
+        ]);
+
+        /* Foreign team's audit must not leak */
+        [$foreign, $foreignTeam] = $this->newUserWithTeam();
+        $foreignLocation = Location::factory()->onTeam($foreignTeam)->create(['name' => 'Foreign shelf']);
+        Audit::factory()->atLocation($foreignLocation, $foreign)->create([
+            'payload' => [
+                'found_ids' => [],
+                'extra' => [],
+                'unknown_codes' => ['SECRET1'],
+            ],
+        ]);
+
+        $this->actingAsWeb($user)
+            ->get("/teams/{$team->id}/audits")
+            ->assertOk()
+            ->assertInertia(function ($page) {
+                $page->component('Audits/Index')
+                    ->has('audits.data', 1)
+                    ->where('audits.data.0.found.0.name', 'Gone item')
+                    ->where('audits.data.0.found.0.deleted', true);
+            });
+
+        $this->assertStringNotContainsString('SECRET1', $this->get("/teams/{$team->id}/audits")->getContent());
+    }
+
+    public function test_audits_page_location_filter(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $shelfA = Location::factory()->onTeam($team)->create(['name' => 'Shelf A']);
+        $shelfB = Location::factory()->onTeam($team)->create(['name' => 'Shelf B']);
+        Audit::factory()->atLocation($shelfA, $user)->create();
+        Audit::factory()->atLocation($shelfB, $user)->create();
+
+        $this->actingAsWeb($user)
+            ->get("/teams/{$team->id}/audits?location={$shelfA->id}")
+            ->assertOk()
+            ->assertInertia(function ($page) use ($shelfA) {
+                $page->component('Audits/Index')
+                    ->has('audits.data', 1)
+                    ->where('audits.data.0.location.id', $shelfA->id)
+                    ->where('filtered_location', $shelfA->id);
+            });
+    }
+
+    public function test_audits_page_requires_membership(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        [$stranger] = $this->newUserWithTeam();
+
+        $this->get("/teams/{$team->id}/audits")->assertRedirect(route('login'));
+
+        $this->actingAsWeb($stranger)
+            ->get("/teams/{$team->id}/audits")
+            ->assertForbidden();
     }
 }

@@ -244,6 +244,14 @@ team/location" from the full items table, which is inference, not fact.
 > ("3 found, 2 missing declared, 1 extra"), `location_id`/`location_name` —
 > filterable with `type=audit`, `location_id`, `since`. Each audit bumps the
 > team revision once (API-003). Client follow-up: the MV-050 "submit" button.
+>
+> **Implemented (2026-10, API-040)** — the report may also carry
+> `missing_ids: string[]` (client ticket MV-167): the expected-but-not-found
+> list, validated with the same team-membership snapshot semantics and stored
+> verbatim in `payload.missing_ids`. Additive — clients that declare only
+> `missing_count` keep working; the count is never recomputed from the list.
+> The web audit page (`GET /teams/{team}/audits`) resolves the list to item
+> names; legacy audits show the count-only note.
 
 **Why** — MV-050 produces a found/missing/extra report *locally*; the server
 never learns an audit happened. A stocktake that isn't recorded is an audit
