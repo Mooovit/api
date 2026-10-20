@@ -43,8 +43,13 @@ class KanbanController extends Controller
     /**
      * The board row shape shared by the server-rendered board (index) and
      * the delta feed — the JS applies delta rows with the same renderer.
+     *
+     * API-036: `location_path` is additive and denormalizes the full
+     * ancestor path ("Garage > Black shelf") from the team's
+     * Location::pathsForTeam() map (falls back to the bare name when the
+     * id is not in the map). Callers pass the map so both feeds stay N+1-free.
      */
-    private function boardRow(Item $item): array
+    private function boardRow(Item $item, array $locationPaths = []): array
     {
         return [
             "id" => $item->id,
@@ -54,6 +59,7 @@ class KanbanController extends Controller
             "parent_id" => $item->parent_id,
             "status_name" => $item->status ? $item->status->name : null,
             "location_name" => $item->location ? $item->location->name : null,
+            "location_path" => $item->location ? ($locationPaths[$item->location_id] ?? $item->location->name) : null,
             "labels" => $item->labels->map(function ($label) {
                 return [
                     'id' => $label->id,
@@ -87,6 +93,8 @@ class KanbanController extends Controller
         /* API-027: the CARD payloads keep a deleted status/location's name
            (nested trashed-inclusive eager loads); the board's own column
            query above stays default-scoped — a deleted column vanishes. */
+        $locationPaths = Location::pathsForTeam($team_id);
+
         $jsonData = [];
         foreach($query['model']::where(["team_id" => $team_id])->with([
             'items.status' => fn ($q) => $q->withTrashed(),
@@ -96,12 +104,16 @@ class KanbanController extends Controller
             $boardItem = [];
             foreach($instance->items as $item) {
                 if(!$item->parent_id) {
-                    array_push($boardItem, $this->boardRow($item));
+                    array_push($boardItem, $this->boardRow($item, $locationPaths));
                 }
             }
             array_push($jsonData, [
                 "id" => $instance->id,
-                "title" => $instance->name,
+                /* API-036: sub-location columns show the full path
+                   ("Garage > Black shelf"); status columns stay bare. */
+                "title" => $type === 'location'
+                    ? ($locationPaths[$instance->id] ?? $instance->name)
+                    : $instance->name,
                 "item" => $boardItem
             ]);
         }
@@ -126,7 +138,7 @@ class KanbanController extends Controller
         /* API-003: the JS live view polls this counter (see revision/delta) */
         $revision = (int) \App\Models\Team::whereKey($team_id)->value('revision');
 
-        return view('kanban', compact('jsonData', 'query', 'type', 'recentHistory', 'statuses', 'locations', 'labels', 'user', 'revision'))
+        return view('kanban', compact('jsonData', 'query', 'type', 'recentHistory', 'statuses', 'locations', 'labels', 'user', 'revision', 'locationPaths'))
             ->with('builtAt', now());
     }
 
@@ -159,6 +171,8 @@ class KanbanController extends Controller
 
         /* API-027: status/location eager loads are trashed-inclusive —
            delta rows keep the deleted row's NAME */
+        $locationPaths = Location::pathsForTeam($team_id);
+
         $changed = Item::with([
             'status' => fn ($q) => $q->withTrashed(),
             'location' => fn ($q) => $q->withTrashed(),
@@ -167,7 +181,7 @@ class KanbanController extends Controller
             ->where('team_id', $team_id)
             ->where('updated_at', '>', $since)
             ->get()
-            ->map(fn (Item $item) => $this->boardRow($item))
+            ->map(fn (Item $item) => $this->boardRow($item, $locationPaths))
             ->values();
 
         return response()->json([
@@ -198,10 +212,11 @@ class KanbanController extends Controller
         ->get();
 
         // Get all statuses, locations, and labels for name resolution
-        // (API-027: status/location plucks are trashed-inclusive so feed
-        // rows referencing a deleted catalogue row keep a NAME)
+        // (API-027: status/labels plucks are trashed-inclusive so feed
+        // rows referencing a deleted catalogue row keep a NAME;
+        // API-036: locations resolve to the full ancestor PATH instead)
         $statuses = Status::where('team_id', $team_id)->withTrashed()->pluck('name', 'id');
-        $locations = Location::where('team_id', $team_id)->withTrashed()->pluck('name', 'id');
+        $locations = Location::pathsForTeam($team_id);
         $labels = Label::where('team_id', $team_id)->pluck('name', 'id');
 
         // Enhance history with resolved names
@@ -256,10 +271,10 @@ class KanbanController extends Controller
             ->orderBy('changed_at', 'desc')
             ->limit(10)
             ->get()
-            ->map(function ($change) {
+            ->map(function ($change) use ($item) {
                 // Resolve old and new values to names
-                $change->old_value_name = $this->resolveValueToName($change->field_name, $change->old_value);
-                $change->new_value_name = $this->resolveValueToName($change->field_name, $change->new_value);
+                $change->old_value_name = $this->resolveValueToName($change->field_name, $change->old_value, $item->team_id);
+                $change->new_value_name = $this->resolveValueToName($change->field_name, $change->new_value, $item->team_id);
                 return $change;
             });
 
@@ -376,10 +391,11 @@ class KanbanController extends Controller
         ->get();
 
         // Get all statuses, locations, and labels for name resolution
-        // (API-027: status/location plucks are trashed-inclusive so feed
-        // rows referencing a deleted catalogue row keep a NAME)
+        // (API-027: status/labels plucks are trashed-inclusive so feed
+        // rows referencing a deleted catalogue row keep a NAME;
+        // API-036: locations resolve to the full ancestor PATH instead)
         $statuses = Status::where('team_id', $user->current_team_id)->withTrashed()->pluck('name', 'id');
-        $locations = Location::where('team_id', $user->current_team_id)->withTrashed()->pluck('name', 'id');
+        $locations = Location::pathsForTeam($user->current_team_id);
         $labels = Label::where('team_id', $user->current_team_id)->pluck('name', 'id');
 
         // Enhance history with resolved names
@@ -406,9 +422,13 @@ class KanbanController extends Controller
     }
 
     /**
-     * Resolve field value ID to human-readable name
+     * Resolve field value ID to human-readable name.
+     *
+     * API-036: `$locations` is the team's Location::pathsForTeam() map
+     * (id => "Garage > Black shelf", trashed-inclusive), not a pluck —
+     * feed rows resolve to the full ancestor path.
      */
-    private function resolveValueName(string $fieldName, $value, $statuses, $locations, $labels): ?string
+    private function resolveValueName(string $fieldName, $value, $statuses, array $locations, $labels): ?string
     {
         if (!$value) return null;
 
@@ -416,7 +436,7 @@ class KanbanController extends Controller
             case 'status_id':
                 return $statuses->get($value);
             case 'location_id':
-                return $locations->get($value);
+                return $locations[$value] ?? null;
             case 'label_id':
                 return $labels->get($value);
             case 'name':
@@ -571,8 +591,12 @@ class KanbanController extends Controller
      * deleted AFTER the history row was written still resolves to its NAME
      * (history must stay readable); the row falls back to the raw value only
      * when nothing was ever found.
+     *
+     * API-036: `location_id` values resolve to the full ancestor PATH via
+     * Location::pathsForTeam() (pass `$teamId`; without it the raw value
+     * falls through, keeping the legacy behavior).
      */
-    private function resolveValueToName(string $fieldName, ?string $value): ?string
+    private function resolveValueToName(string $fieldName, ?string $value, ?string $teamId = null): ?string
     {
         if (!$value) {
             return null;
@@ -584,6 +608,9 @@ class KanbanController extends Controller
                 return $status ? $status->name : $value;
 
             case 'location_id':
+                if ($teamId !== null) {
+                    return Location::pathsForTeam($teamId)[$value] ?? $value;
+                }
                 $location = Location::withTrashed()->find($value);
                 return $location ? $location->name : $value;
 

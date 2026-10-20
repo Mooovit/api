@@ -13,7 +13,9 @@ use App\Http\Controllers\ItemShareController;
 use App\Http\Controllers\LabelController;
 use App\Http\Controllers\LocationController;
 use App\Http\Controllers\ItemBarcodeController;
+use App\Http\Controllers\PrintApiController;
 use App\Http\Controllers\StatusController;
+use App\Http\Controllers\SyncBatchController;
 use App\Http\Controllers\TeamS3Controller;
 use App\Http\Controllers\UserController;
 use Illuminate\Http\Request;
@@ -124,6 +126,17 @@ Route::middleware('auth:sanctum')->group(function () {
     /* API-015: per-device (per-token) current team — fetch + switch */
     Route::get('device-team', [DeviceTeamController::class, 'show']);
     Route::post('device-team', [DeviceTeamController::class, 'update']);
+
+    /* API-037: batch sync — one request for a phone's whole offline queue
+       (own `sync` prefix: cannot collide with any {item}/{location} binding). */
+    Route::post('sync/batch', [SyncBatchController::class, 'store']);
+    Route::get('sync/batch/{batchId}', [SyncBatchController::class, 'show']);
+
+    /* API-039: server-side print queue — push an item label / list the live
+       print stations (own `print` prefix: cannot collide with any binding).
+       `print:write` token ability + team permission, enforced in-controller. */
+    Route::post('print/jobs', [PrintApiController::class, 'storeJob']);
+    Route::get('print/stations', [PrintApiController::class, 'stations']);
 
     /* API-013: image attachments on items */
     Route::post('item/{item}/attachments', [AttachmentController::class, 'store']);

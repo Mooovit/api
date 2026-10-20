@@ -17,7 +17,8 @@ use Inertia\Inertia;
  * The dashboard (server UI) — an overview of the session user's current
  * team: revision + last activity (API-003/009 as read-only summaries),
  * item counts with a status breakdown, the latest items with their
- * status/location, and the state of the savepoint stack (last backup,
+ * status/location, the latest stocktake audits with their result
+ * (API-010), and the state of the savepoint stack (last backup,
  * auto-backup schedule, S3 offload — API-018/020/021).
  */
 class DashboardController extends Controller
@@ -83,6 +84,24 @@ class DashboardController extends Controller
                     'location' => $item->location->name ?? null,
                     'updated_at' => $item->updated_at
                         ? $item->updated_at->toISOString()
+                        : null,
+                ])
+                ->values(),
+            'audits' => Audit::where('team_id', $team->id)
+                ->with(['location:id,name', 'user:id,name'])
+                ->orderByDesc('created_at')
+                ->orderByDesc('id')
+                ->limit(10)
+                ->get()
+                ->map(fn (Audit $audit) => [
+                    'id' => $audit->id,
+                    'location' => $audit->location->name ?? null,
+                    'user' => $audit->user->name ?? null,
+                    'found_count' => (int) $audit->found_count,
+                    'missing_count' => (int) $audit->missing_count,
+                    'extra_count' => (int) $audit->extra_count,
+                    'created_at' => $audit->created_at
+                        ? $audit->created_at->toISOString()
                         : null,
                 ])
                 ->values(),

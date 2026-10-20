@@ -200,6 +200,29 @@ class ItemShareLinkTest extends TestCase
         $this->get('/share/not-a-real-token')->assertStatus(404);
     }
 
+    public function test_public_page_renders_the_full_sub_location_path(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $garage = \App\Models\Location::factory()->onTeam($team)->create(['name' => 'Garage']);
+        $shelf = \App\Models\Location::factory()->onTeam($team)->create([
+            'name' => 'Black shelf',
+            'parent_id' => $garage->id,
+        ]);
+        $item = Item::factory()->onTeam($team)->inLocation($shelf)->create(['name' => 'ShelfBox']);
+        $child = Item::factory()->onTeam($team)->inLocation($garage)->childOf($item)->create(['name' => 'ShelfKid']);
+
+        $payload = $this->activate($user, $item);
+
+        $response = $this->get("/share/{$payload['token']}")->assertOk();
+        $response->assertSee('Garage &gt; Black shelf', false);
+        $response->assertSee('Garage');
+
+        /* Still no identifiers: only the composed strings render */
+        $html = $response->getContent();
+        $this->assertStringNotContainsString($shelf->id, $html);
+        $this->assertStringNotContainsString($child->id, $html);
+    }
+
     public function test_public_page_for_a_trashed_box_is_a_404(): void
     {
         [$user, $team] = $this->newUserWithTeam();

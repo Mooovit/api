@@ -17,14 +17,20 @@ class AuditController extends Controller
     /**
      * POST api/location/{location}/audits (API-010) — record a stocktake
      * snapshot for a location. The body is the MV-050 report:
-     * `{found_ids: [], extra: [{id}], unknown_codes: [], missing_count?}`.
+     * `{found_ids: [], extra: [{id}], unknown_codes: [], missing_count?,
+     * missing_ids?}`.
      *
      * found/extra counts are computed server-side; `missing_count` is a
-     * declared input (the expected set is client knowledge). Every referenced
-     * id must belong to the location's team — team membership only, snapshot
-     * semantics: current location is not checked and soft-deleted (trashed)
-     * items still validate. The audit also surfaces in the API-009 activity
-     * feed as a synthetic `audit` event, and bumps the team revision once.
+     * declared input (the expected set is client knowledge). API-040 adds
+     * the optional `missing_ids` list (client ticket MV-167) so the server
+     * can itemize what wasn't found — additive: clients that still declare
+     * only the count keep working, and `missing_count` is stored as
+     * declared (never recomputed from the list). Every referenced id
+     * (found, extra, missing) must belong to the location's team — team
+     * membership only, snapshot semantics: current location is not checked
+     * and soft-deleted (trashed) items still validate. The audit also
+     * surfaces in the API-009 activity feed as a synthetic `audit` event,
+     * and bumps the team revision once.
      *
      * @param Request $request
      * @param Location $location
@@ -48,17 +54,21 @@ class AuditController extends Controller
             'unknown_codes' => 'nullable|array',
             'unknown_codes.*' => 'string',
             'missing_count' => 'nullable|integer|min:0',
+            'missing_ids' => 'nullable|array',
+            'missing_ids.*' => 'string',
         ]);
 
         $foundIds = array_values($data['found_ids']);
         $extra = array_values($data['extra'] ?? []);
         $unknownCodes = array_values($data['unknown_codes'] ?? []);
+        $missingIds = array_values($data['missing_ids'] ?? []);
         $missingCount = (int) ($data['missing_count'] ?? 0);
 
         /* Snapshot semantics: validate team membership only (trashed rows
            included), never the items' current location */
         $referencedIds = array_values(array_unique(array_merge(
             $foundIds,
+            $missingIds,
             array_map(fn (array $row) => $row['id'], $extra)
         )));
 
@@ -72,7 +82,7 @@ class AuditController extends Controller
             ]);
         }
 
-        return DB::transaction(function () use ($user, $location, $foundIds, $extra, $unknownCodes, $missingCount) {
+        return DB::transaction(function () use ($user, $location, $foundIds, $extra, $unknownCodes, $missingIds, $missingCount) {
             $audit = Audit::create([
                 'team_id' => $location->team_id,
                 'location_id' => $location->id,
@@ -84,6 +94,7 @@ class AuditController extends Controller
                     'found_ids' => $foundIds,
                     'extra' => $extra,
                     'unknown_codes' => $unknownCodes,
+                    'missing_ids' => $missingIds,
                 ],
             ]);
 

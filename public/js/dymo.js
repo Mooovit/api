@@ -1,0 +1,392 @@
+/*
+ * Dymo — label printing service for DYMO LabelWriter printers (API-038,
+ * queue-ified in API-039).
+ *
+ * Talks to the DYMO Connect desktop app through the vendored framework 2.x
+ * (public/js/vendor/dymo.connect.framework.js, official build from
+ * download.dymo.com/dymo/Software/JavaScript/dymo.connect.framework.js),
+ * which drives the localhost web service on port 41951. No runtime CDN.
+ *
+ * Label = item NAME (text, shrink-to-fit) + the item's uuid encoded as
+ * Code128 AND QR Code (mirrors the API-028 identity-QR convention: either
+ * symbology scanned back resolves via GET /kanban/item/{uuid}).
+ *
+ * API-039: all printing goes through the SERVER queue. UI surfaces only
+ * push jobs (POST /print/jobs); any page on a workstation with a detected
+ * LabelWriter declares itself a print station (localStorage `dymo.station`
+ * client id + POST /print/station) and runs the queue worker — a claim
+ * poll every 2s that prints drained jobs through printItem() and posts the
+ * outcome. The worker pauses while the tab is hidden (a hidden tab stops
+ * heart-beating, so its station correctly goes dead server-side).
+ *
+ * Printer + label template choices are localStorage prefs — they belong to
+ * the workstation (the physically attached printer), not to the team or
+ * user.
+ */
+window.Dymo = (function () {
+    'use strict';
+
+    const LS_PRINTER = 'dymo.printer';
+    const LS_TEMPLATE = 'dymo.template';
+    const LS_STATION = 'dymo.station';
+    const DEFAULT_TEMPLATE = '30334';
+    const DETECT_TIMEOUT_MS = 5000;
+    const POLL_MS = 2000;
+
+    /*
+     * Label templates. Geometry in twips (1440/inch). DrawCommands use the
+     * portrait space DYMO's own exported .label files use (Width = short
+     * side); object Bounds use the display space (long side horizontal) —
+     * same split as DYMO Label's own output. name bounds use ShrinkToFit so
+     * long item names shrink instead of truncating.
+     */
+    const TEMPLATES = {
+        /* 3.5" x 2.125" — roomy: name + Code128 + QR (default) */
+        '30334': {
+            paper: '30334 Large Address',
+            draw: { w: 3060, h: 5040 },
+            name: { x: 240, y: 180, w: 4560, h: 680, font: 14 },
+            code: { x: 240, y: 960, w: 3200, h: 1900 },
+            qr: { x: 3560, y: 980, w: 1380, h: 1380 }
+        },
+        /* 3.5" x 1.125" — slim: everything, but the Code128 is dense */
+        '30252': {
+            paper: '30252 Address',
+            draw: { w: 1581, h: 5040 },
+            name: { x: 240, y: 140, w: 4560, h: 520, font: 11 },
+            code: { x: 240, y: 700, w: 3300, h: 760 },
+            qr: { x: 3640, y: 620, w: 920, h: 900 }
+        },
+        /* 2.25" x 1.25" — small stock: a 36-char Code128 + QR cannot both
+           fit legibly, so this template carries the QR only */
+        '30336': {
+            paper: '30336 Multipurpose',
+            draw: { w: 1800, h: 3240 },
+            name: { x: 160, y: 120, w: 2920, h: 480, font: 9 },
+            code: null,
+            qr: { x: 960, y: 680, w: 1080, h: 1080 }
+        }
+    };
+
+    const REASONS = {
+        'framework-missing': 'DYMO framework script not loaded',
+        'service-unreachable': 'DYMO Connect not running (or blocked) on this computer',
+        'no-printer': 'No DYMO LabelWriter printer in DYMO Connect (add/power the printer, then re-check)',
+        'framework-error': 'DYMO framework failed to initialize'
+    };
+
+    let detectionPromise = null;
+    let state = { ready: false, reason: 'not-started', printers: [] };
+
+    /* ---- Detection (cached; one web-service round trip per page load) ---- */
+
+    function detect() {
+        if (detectionPromise) return detectionPromise;
+        detectionPromise = new Promise(function (resolve) {
+            const fw = window.dymo && window.dymo.label ? window.dymo.label.framework : null;
+            if (!fw) return finish({ ready: false, reason: 'framework-missing', printers: [] });
+
+            const timer = setTimeout(function () {
+                finish({ ready: false, reason: 'service-unreachable', printers: [] });
+            }, DETECT_TIMEOUT_MS);
+
+            function finish(result) {
+                clearTimeout(timer);
+                state = result;
+                if (result.ready && document.body) document.body.classList.add('dymo-ready');
+                if (document.body) document.body.classList.add('dymo-checked');
+                resolve(result);
+            }
+
+            try {
+                /* init() — NOT bare checkEnvironment(): only init constructs
+                 * the framework (chooseEnvironment → DlsWebService). Printer
+                 * enumeration before that throws synchronously and used to
+                 * surface as 'framework-error' instead of 'no-printer'. */
+                fw.init(function (env) {
+                    if (!env || !env.isWebServicePresent) {
+                        return finish({ ready: false, reason: 'service-unreachable', printers: [] });
+                    }
+                    /* The framework resolves goog.Promise (Closure) — it has
+                     * .then but NO .catch, so adapt to a native promise
+                     * before chaining (a raw .then().catch() threw
+                     * TypeError inside the framework's XHR callback). */
+                    new Promise(function (resolve, reject) {
+                        fw.getLabelWriterPrintersAsync().then(resolve, reject);
+                    }).then(function (printers) {
+                        const names = (printers || []).map(function (p) { return p.name; });
+                        if (!names.length) {
+                            return finish({ ready: false, reason: 'no-printer', printers: [] });
+                        }
+                        finish({ ready: true, reason: '', printers: names });
+                    }).catch(function () {
+                        finish({ ready: false, reason: 'service-unreachable', printers: [] });
+                    });
+                });
+            } catch (e) {
+                finish({ ready: false, reason: 'framework-error', printers: [] });
+            }
+        });
+        return detectionPromise;
+    }
+
+    function reasonText(reason) {
+        return REASONS[reason] || (reason || 'unknown');
+    }
+
+    /* ---- Per-workstation prefs ---- */
+
+    function getPrinter() { return localStorage.getItem(LS_PRINTER) || ''; }
+    function setPrinter(name) { localStorage.setItem(LS_PRINTER, String(name || '')); }
+    function getTemplate() { return localStorage.getItem(LS_TEMPLATE) || DEFAULT_TEMPLATE; }
+    function setTemplate(id) { if (TEMPLATES[id]) localStorage.setItem(LS_TEMPLATE, id); }
+
+    /* ---- Label XML ---- */
+
+    function xmlEscape(s) {
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&apos;');
+    }
+
+    function bounds(b) {
+        return '<Bounds X="' + b.x + '" Y="' + b.y + '" Width="' + b.w + '" Height="' + b.h + '"/>';
+    }
+
+    function objectInfo(inner, b) {
+        return '<ObjectInfo>' + inner + bounds(b) + '</ObjectInfo>';
+    }
+
+    function textObject(name, text, cfg) {
+        return '<TextObject>' +
+            '<Name>' + name + '</Name>' +
+            '<ForeColor Alpha="255" Red="0" Green="0" Blue="0"/>' +
+            '<BackColor Alpha="0" Red="255" Green="255" Blue="255"/>' +
+            '<LinkedObjectName></LinkedObjectName>' +
+            '<Rotation>Rotation0</Rotation>' +
+            '<IsMirrored>False</IsMirrored>' +
+            '<IsVariable>True</IsVariable>' +
+            '<HorizontalAlignment>Center</HorizontalAlignment>' +
+            '<VerticalAlignment>Middle</VerticalAlignment>' +
+            '<TextFitMode>ShrinkToFit</TextFitMode>' +
+            '<UseFullFontHeight>True</UseFullFontHeight>' +
+            '<Verticalized>False</Verticalized>' +
+            '<StyledText><Element>' +
+            '<String>' + xmlEscape(text) + '</String>' +
+            '<Attributes>' +
+            '<Font Family="Arial" Size="' + cfg.font + '" Bold="True" Italic="False" Underline="False" Strike="False"/>' +
+            '<ForeColor Alpha="255" Red="0" Green="0" Blue="0"/>' +
+            '</Attributes>' +
+            '</Element></StyledText>' +
+            '</TextObject>';
+    }
+
+    function barcodeObject(name, data, type, size) {
+        return '<BarcodeObject>' +
+            '<Name>' + name + '</Name>' +
+            '<ForeColor Alpha="255" Red="0" Green="0" Blue="0"/>' +
+            '<BackColor Alpha="0" Red="255" Green="255" Blue="255"/>' +
+            '<LinkedObjectName></LinkedObjectName>' +
+            '<Rotation>Rotation0</Rotation>' +
+            '<IsMirrored>False</IsMirrored>' +
+            '<IsVariable>True</IsVariable>' +
+            '<Text>' + xmlEscape(data) + '</Text>' +
+            '<Type>' + type + '</Type>' +
+            '<Size>' + size + '</Size>' +
+            '<TextPosition>None</TextPosition>' +
+            '<TextFont Family="Arial" Size="8" Bold="False" Italic="False" Underline="False" Strike="False"/>' +
+            '<CheckSumText>False</CheckSumText>' +
+            '<HumanReadable>None</HumanReadable>' +
+            '<EANMargin>True</EANMargin>' +
+            '</BarcodeObject>';
+    }
+
+    /**
+     * Build the DieCutLabel XML for one item sticker.
+     * 30334/30252 carry BARCODE (Code128) + QRCODE; 30336 carries QRCODE only.
+     * Exposed for console smoke-testing (round-trip the output through DYMO
+     * Connect before trusting a new template).
+     */
+    function buildLabelXml(templateId, name, uuid) {
+        const t = TEMPLATES[templateId] || TEMPLATES[DEFAULT_TEMPLATE];
+        const text = String(name || '').trim().substring(0, 60) || 'Unlabeled item';
+        const u = String(uuid || '').trim();
+
+        return '<?xml version="1.0" encoding="utf-8"?>' +
+            '<DieCutLabel Version="8.0" Units="twips">' +
+            '<PaperOrientation>Landscape</PaperOrientation>' +
+            '<Id>Custom</Id>' +
+            '<IsOutlined>False</IsOutlined>' +
+            '<PaperName>' + t.paper + '</PaperName>' +
+            '<DrawCommands><RoundRectangle X="0" Y="0" Width="' + t.draw.w +
+            '" Height="' + t.draw.h + '" Rx="278" Ry="278"/></DrawCommands>' +
+            objectInfo(textObject('NAME', text, t.name), t.name) +
+            (t.code ? objectInfo(barcodeObject('BARCODE', u, 'Code128', 'Small'), t.code) : '') +
+            objectInfo(barcodeObject('QRCODE', u, 'QRCode', 'Large'), t.qr) +
+            '</DieCutLabel>';
+    }
+
+    /* ---- Printing ---- */
+
+    async function printItem(name, uuid, opts) {
+        opts = opts || {};
+        const det = await detect();
+        if (!det.ready) throw new Error(reasonText(det.reason));
+
+        /* Prefer the workstation's saved printer; fall back to the first found */
+        let printer = opts.printer || getPrinter();
+        if (!printer || det.printers.indexOf(printer) === -1) printer = det.printers[0];
+
+        let templateId = opts.template || getTemplate();
+        if (!TEMPLATES[templateId]) templateId = DEFAULT_TEMPLATE;
+
+        const labelXml = buildLabelXml(templateId, name, uuid);
+        dymo.label.framework.printLabel(printer, labelXml, null, null);
+        return printer;
+    }
+
+    /* Serialized jobs — the queue worker prints one job per tick; keep the
+       chain anyway so a burst of jobs can't overlap on the web service */
+    let queue = Promise.resolve();
+    function printItemQueued(name, uuid, opts) {
+        const job = queue.then(function () { return printItem(name, uuid, opts); });
+        queue = job.catch(function () {});
+        return job;
+    }
+
+    /* ---- Server queue (API-039): station identity + worker ---- */
+
+    function csrfToken() {
+        const meta = document.querySelector('meta[name="csrf-token"]');
+        return meta ? meta.getAttribute('content') : '';
+    }
+
+    async function postJson(url, body) {
+        const res = await fetch(url, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': csrfToken()
+            },
+            body: JSON.stringify(body)
+        });
+        if (!res.ok) {
+            let message = res.status + ' ' + res.statusText;
+            try {
+                const payload = await res.json();
+                if (payload && payload.error) message = payload.error;
+            } catch (e) { /* non-JSON body — keep the status text */ }
+            const err = new Error(message);
+            err.status = res.status;
+            throw err;
+        }
+        try { return await res.json(); } catch (e) { return {}; }
+    }
+
+    /* Browser-local station identity: stable across reloads, upserted
+       server-side on [team, client_id]. Generated on first use. */
+    function getStationId() {
+        let id = localStorage.getItem(LS_STATION);
+        if (!id) {
+            id = (window.crypto && crypto.randomUUID)
+                ? crypto.randomUUID()
+                : 'stn-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+            localStorage.setItem(LS_STATION, id);
+        }
+        return id;
+    }
+
+    /* Declare/refresh this workstation's printer with the server queue.
+       Best-effort: pages still print locally-side (via the worker's claim
+       loop) even if a declaration tick fails. */
+    function declareStation() {
+        return postJson('/print/station', {
+            client_id: getStationId(),
+            printer_name: getPrinter(),
+            template: getTemplate()
+        }).then(function () { return true; }).catch(function () { return false; });
+    }
+
+    let workerTimer = null;
+    let printing = false;
+
+    /* One worker tick: heart-beat + claim → print → report. The claim's
+       query params carry the CURRENT printer/template prefs, so changing
+       the station selects re-targets the station on the next poll. */
+    async function workerTick() {
+        if (document.visibilityState !== 'visible' || printing) return;
+        printing = true;
+        try {
+            const params = new URLSearchParams({
+                client_id: getStationId(),
+                printer_name: getPrinter(),
+                template: getTemplate()
+            });
+            const res = await fetch('/print/claim?' + params.toString(), {
+                credentials: 'same-origin',
+                headers: { 'Accept': 'application/json' }
+            });
+            if (!res.ok) return;
+            const data = await res.json();
+            if (!data || !data.job) return;
+
+            const job = data.job;
+            let ok = true;
+            let errorText = null;
+            try {
+                await printItem(job.item_name, job.item_id, {
+                    template: job.template,
+                    printer: job.target_printer || undefined
+                });
+            } catch (e) {
+                ok = false;
+                errorText = (e && e.message) ? e.message : 'print failed';
+            }
+
+            try {
+                await postJson('/print/jobs/' + encodeURIComponent(job.id) + '/complete', {
+                    client_id: getStationId(),
+                    ok: ok,
+                    error: errorText
+                });
+            } catch (e) { /* the stale-claim reclaim covers a lost report */ }
+
+            document.dispatchEvent(new CustomEvent(ok ? 'dymo:job-printed' : 'dymo:job-failed', {
+                detail: job
+            }));
+        } catch (e) { /* server unreachable — retry on the next tick */ }
+        finally {
+            printing = false;
+        }
+    }
+
+    /* Start polling (idempotent). Only meaningful after a successful
+       detect() — callers gate this on det.ready. */
+    function startQueueWorker() {
+        if (workerTimer) return;
+        workerTimer = setInterval(workerTick, POLL_MS);
+        workerTick();
+    }
+
+    return {
+        detect: detect,
+        reasonText: reasonText,
+        status: function () { return state; },
+        getPrinter: getPrinter,
+        setPrinter: setPrinter,
+        getTemplate: getTemplate,
+        setTemplate: setTemplate,
+        TEMPLATES: TEMPLATES,
+        buildLabelXml: buildLabelXml,
+        printItem: printItem,
+        printItemQueued: printItemQueued,
+        getStationId: getStationId,
+        declareStation: declareStation,
+        startQueueWorker: startQueueWorker
+    };
+})();

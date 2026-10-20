@@ -236,7 +236,16 @@ async function applyDelta() {
     const changed = data.changed || [];
     const deletedIds = data.deleted_ids || [];
 
-    changed.forEach(row => applyRowToBoard(row));
+    changed.forEach(row => {
+        applyRowToBoard(row);
+        /* Keep the path map fresh for the locations these rows moved to —
+           locationDisplay() reads it, so a refreshed modal/card must not
+           resolve a stale page-load path. */
+        if (row.location_id && row.location_path) {
+            window.KANBAN_LOCATION_PATHS = window.KANBAN_LOCATION_PATHS || {};
+            window.KANBAN_LOCATION_PATHS[row.location_id] = row.location_path;
+        }
+    });
     deletedIds.forEach(id => removeCard(id));
 
     lastRevision = data.revision;
@@ -247,6 +256,10 @@ async function applyDelta() {
 
     if (changed.length || deletedIds.length) {
         showNotification(`Board updated — ${changed.length} changed, ${deletedIds.length} removed`, 'info');
+        /* Keep an OPEN details modal truthful: refresh it when its item is
+           among the changed rows (or one of the viewed item's children is),
+           close it when its item was removed. */
+        await refreshOpenItemDetailsIfAffected(changed, deletedIds);
     }
 }
 
@@ -316,10 +329,13 @@ function buildCardHtml(row) {
                                             </span>` : ''}
                                             ${row.location_name ? `
                                             <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                                <i class="fas fa-map-marker-alt mr-1"></i>${escapeHtml(row.location_name)}
+                                                <i class="fas fa-map-marker-alt mr-1"></i>${escapeHtml(row.location_path || row.location_name)}
                                             </span>` : ''}
                                         </div>
                                         <div class="text-xs text-gray-400 flex items-center gap-2">
+                                            <button onclick="event.stopPropagation(); printItemLabel('${row.id}', this)" title="Queue DYMO label" class="hover:text-indigo-600">
+                                                <i class="fas fa-print"></i>
+                                            </button>
                                             <button onclick="event.stopPropagation(); showCardQr('${row.id}')" title="Show public share QR" class="hover:text-indigo-600">
                                                 <i class="fas fa-qrcode"></i>
                                             </button>
@@ -356,6 +372,15 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text == null ? '' : String(text);
     return div.innerHTML;
+}
+
+// API-036: resolve a serialized location to its full path
+// ("Garage > Black shelf") using the server-rendered team map
+// (window.KANBAN_LOCATION_PATHS); falls back to the bare name.
+function locationDisplay(location) {
+    if (!location) return null;
+    const paths = window.KANBAN_LOCATION_PATHS || {};
+    return paths[location.id] || location.name;
 }
 
 function updateLastUpdatedTime() {
@@ -522,23 +547,56 @@ async function quickScanItem() {
 // Enhanced item details
 async function openItemDetails(itemId) {
     try {
-        const response = await axios.get('/kanban/item/' + itemId, {
-            headers: {
-                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
-            }
-        });
-
-        const data = response.data;
+        await fetchItemDetails(itemId);
         currentItemId = itemId;
-        await loadTeamLabels();
-        displayEnhancedItemDetails(data);
         document.getElementById('itemDetailsModal').classList.remove('hidden');
         showNotification('Item details loaded', 'success'); // No sound for details loading
     } catch (error) {
         console.error('Error fetching item details:', error);
         showNotification('Item not found or error loading details', 'error');
+    }
+}
+
+/* Fetch one item's details and render them into the modal — no toasts, no
+   modal-visibility side effects. Throws on fetch errors so callers can
+   react (openItemDetails notifies; the delta refresh falls back to
+   closing the modal). */
+async function fetchItemDetails(itemId) {
+    const response = await axios.get('/kanban/item/' + itemId, {
+        headers: {
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+        }
+    });
+
+    await loadTeamLabels();
+    displayEnhancedItemDetails(response.data);
+    return response.data;
+}
+
+/* Delta follow-up: the board just moved under an open details modal.
+   Refresh the modal when its item is among the changed rows (or one of
+   ITS children changed — the Contents list), close it when its item was
+   removed (the re-fetch would 404: soft-deleted items are unaddressable).
+   An unaffected item's modal is left alone — mid-edit state (label
+   select, barcode input) is never wiped without a reason. */
+async function refreshOpenItemDetailsIfAffected(changed, deletedIds) {
+    if (!currentItemId) return;
+    const modal = document.getElementById('itemDetailsModal');
+    if (!modal || modal.classList.contains('hidden')) return;
+
+    if (deletedIds.includes(currentItemId)) {
+        closeItemDetailsModal();
+        return;
+    }
+    if (changed.some(row => row.id === currentItemId || row.parent_id === currentItemId)) {
+        try {
+            await fetchItemDetails(currentItemId);
+        } catch (error) {
+            console.error('Error refreshing item details:', error);
+            closeItemDetailsModal();
+        }
     }
 }
 
@@ -578,7 +636,9 @@ function displayEnhancedItemDetails(data) {
                         <button onclick="openMoveItemModal()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded-lg text-sm font-medium transition">
                             <i class="fas fa-arrows-alt mr-1"></i>Move
                         </button>
-
+                        <button onclick="printItemLabel('${data.item.id}', this)" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1 rounded-lg text-sm font-medium transition" title="Queue DYMO label">
+                            <i class="fas fa-print mr-1"></i>Print label
+                        </button>
                     </div>
                 </div>
                 
@@ -600,7 +660,7 @@ function displayEnhancedItemDetails(data) {
                 <div class="space-y-3">
                     <div class="flex justify-between items-center p-3 bg-white rounded-lg">
                         <span class="font-medium text-gray-700">Name:</span>
-                        <span class="text-gray-900 font-semibold">${data.item.name}</span>
+                        <span id="detailsItemName" class="text-gray-900 font-semibold">${data.item.name}</span>
                     </div>
                     <div class="flex justify-between items-center p-3 bg-white rounded-lg">
                         <span class="font-medium text-gray-700">Status:</span>
@@ -611,7 +671,7 @@ function displayEnhancedItemDetails(data) {
                     <div class="flex justify-between items-center p-3 bg-white rounded-lg">
                         <span class="font-medium text-gray-700">Location:</span>
                         <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                            ${data.item.location ? data.item.location.name : 'No location'}
+                            ${data.item.location ? locationDisplay(data.item.location) : 'No location'}
                         </span>
                     </div>
                     <div class="flex justify-between items-center p-3 bg-white rounded-lg">
@@ -669,7 +729,12 @@ function displayEnhancedItemDetails(data) {
                             <div class="bg-white border rounded-lg p-3 cursor-pointer hover:bg-gray-50 transition" onclick="openItemDetails('${child.id}')">
                                 <div class="flex items-center justify-between">
                                     <div class="font-medium text-gray-800">${child.name}</div>
-                                    <i class="fas fa-external-link-alt text-gray-400"></i>
+                                    <div class="flex items-center gap-2 text-xs text-gray-400">
+                                        <button onclick="event.stopPropagation(); printItemLabel('${child.id}', this)" title="Queue DYMO label" class="hover:text-indigo-600">
+                                            <i class="fas fa-print"></i>
+                                        </button>
+                                        <i class="fas fa-external-link-alt"></i>
+                                    </div>
                                 </div>
                                 <div class="text-xs text-gray-500 mt-1">Click to view details</div>
                             </div>
@@ -1144,7 +1209,7 @@ function applyDetailedFilter() {
                 <div class="flex items-center justify-between text-sm">
                     <span class="text-gray-600">Location:</span>
                     <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                        ${item.location ? item.location.name : 'No location'}
+                        ${item.location ? locationDisplay(item.location) : 'No location'}
                     </span>
                 </div>
             </div>
@@ -1637,6 +1702,38 @@ let currentShareUrl = null;
  * ensures the item has an active public link (creates it on the fly via
  * POST /kanban/item/{id}/share) and opens the QR modal.
  */
+/* API-039: queue one DYMO sticker for an item. The button only PUSHES a job
+   to the server queue (POST /print/jobs) — any declared print station (this
+   tab included, via the shared Dymo worker) drains and prints it. The uuid
+   comes from the caller (card/modal markup — ids are inline-safe); the
+   server resolves the item name at claim time, so no DOM lookup is needed.
+   Works without a local DYMO — that's the point of the queue. */
+async function printItemLabel(itemId, el) {
+    if (!itemId) return;
+
+    try {
+        await axios.post('/print/jobs', {
+            item: itemId,
+            template: window.Dymo ? window.Dymo.getTemplate() : '30334'
+        }, {
+            headers: {
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            }
+        });
+        showNotification('Label queued for printing', 'success');
+    } catch (error) {
+        if (error.response?.status === 409) {
+            showNotification(error.response.data?.error || 'Printer not available', 'error');
+        } else if (error.response?.status === 404) {
+            showNotification('Item not found', 'error');
+        } else {
+            showNotification('Could not queue the label', 'error');
+        }
+    }
+}
+
 async function showCardQr(itemId) {
     if (!itemId) return;
 
@@ -1898,7 +1995,7 @@ function displaySearchResults(results, query) {
                     <div class="flex items-center justify-between text-sm">
                         <span class="text-gray-600">Location:</span>
                         <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                            ${item.location ? item.location.name : 'No location'}
+                            ${item.location ? locationDisplay(item.location) : 'No location'}
                         </span>
                     </div>
                     ${item.children_count > 0 ? `
@@ -1961,10 +2058,22 @@ document.addEventListener('DOMContentLoaded', function() {
         searchInput.addEventListener('input', function(e) {
             performSearch(e.target.value.trim());
         });
-        
+
         searchInput.addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
                 performSearch(e.target.value.trim());
+            }
+        });
+    }
+
+    // API-038/039: one DYMO detection round trip per page load. On success
+    // this tab becomes a print station: it declares its printer to the
+    // server queue and starts the claim worker that prints queued jobs.
+    if (window.Dymo) {
+        window.Dymo.detect().then(function (det) {
+            if (det.ready) {
+                window.Dymo.declareStation();
+                window.Dymo.startQueueWorker();
             }
         });
     }
@@ -2016,6 +2125,7 @@ window.openSearchPage = openSearchPage;
 window.closeSearchModal = closeSearchModal;
 window.setSearchFilter = setSearchFilter;
 window.showCardQr = showCardQr;
+window.printItemLabel = printItemLabel;
 window.closeQrModal = closeQrModal;
 window.copyQrShareUrl = copyQrShareUrl;
 window.copyShareUrl = copyShareUrl;

@@ -2,10 +2,13 @@
 
 use App\Http\Controllers\ItemController;
 use App\Http\Controllers\KanbanController;
+use App\Http\Controllers\LabelPrintController;
+use App\Http\Controllers\PrintQueueController;
 use App\Http\Controllers\PublicShareController;
 use App\Http\Controllers\BackupSheetController;
 use App\Http\Controllers\BackupScheduleController;
 use App\Http\Controllers\BackupsController;
+use App\Http\Controllers\AuditsController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DevicesController;
 use App\Http\Controllers\TeamS3SettingsController;
@@ -77,6 +80,26 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/kanban/item/{itemId}/share', [KanbanController::class, 'shareItem']);
     Route::delete('/kanban/item/{itemId}/share', [KanbanController::class, 'unshareItem']);
 
+    // API-038: label print station — scan a box, touch contents to print
+    // DYMO stickers. Top-level path (no /kanban/{type} collision); item
+    // data itself stays gated by GET /kanban/item/{itemId}.
+    Route::get('/label-print', [LabelPrintController::class, 'index'])
+        ->name('label-print.index');
+
+    // API-039: server-side print queue — session flavor used by the kanban
+    // page and the /label-print station (they cannot call /api/* — no
+    // stateful session group there; semantics shared via App\PrintQueue with
+    // the token flavor in api.php). GET /print/claim doubles as the station
+    // heartbeat; top-level /print/* paths (no /kanban/{type} collision).
+    Route::post('/print/jobs', [PrintQueueController::class, 'storeJob'])
+        ->name('print.jobs.store');
+    Route::get('/print/claim', [PrintQueueController::class, 'claim'])
+        ->name('print.claim');
+    Route::post('/print/jobs/{jobId}/complete', [PrintQueueController::class, 'complete'])
+        ->name('print.jobs.complete');
+    Route::post('/print/station', [PrintQueueController::class, 'station'])
+        ->name('print.station');
+
     // Generic route must come LAST
     Route::get('/kanban/{type}', [KanbanController::class, 'index']);
 });
@@ -115,6 +138,11 @@ Route::middleware(['auth:sanctum', 'verified'])->group(function () {
         ->name('backups.download');
     Route::delete('/teams/{team}/backups/{backup}', [BackupsController::class, 'destroy'])
         ->name('backups.destroy');
+
+    // Audit results (API-010) — read-only server UI for the MV-050 stocktake
+    // snapshots (same team authorization pattern as the backups block).
+    Route::get('/teams/{team}/audits', [AuditsController::class, 'index'])
+        ->name('audits.index');
 });
 
 // Devices (API-012/017) — server UI: token mint (plain text flashed once),

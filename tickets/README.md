@@ -84,6 +84,11 @@ tickets/
 | API-033  | — (client request: `?since=` re-delivered same-second rows forever; app side MV-150) | Item delta keyed by team revision — `GET api/item?since_revision=N` over the `items.sync_revision` stamp |
 | API-034  | — (user request: sub-locations, Matthieu 2026-09) | Location hierarchy — nullable `locations.parent_id` (create/move with cycle guard, delete re-parents children; app side MV-152) |
 | API-035  | — (user request: location locator stickers, Matthieu 2026-09-21) | Location barcodes — nullable `locations.barcode`, team-scoped 409 incl. trashed (bind shelf locator stickers; app side MV-153) |
+| API-036  | — (user request: show sub-location paths on the web, 2026-09-22) | Location path display — "Garage > Black shelf" across the kanban web surfaces + public share page (web-only, no API change) |
+| API-037  | — (user request: batch the offline push, rate-limited today; client side to be ticketed) | Batch sync — POST api/sync/batch: ordered offline mutations, per-op isolation + receipts, three-way merge (cross-field auto-resolve, same-field conflict to the app) |
+| API-038  | — (user request: DYMO stickers, Matthieu 2026-09-23) | DYMO label printing — vendored framework 2.x, name + uuid (Code128 + QR) labels, print buttons on kanban/details, scan-a-box print station page (web-only) |
+| API-039  | — (user request: server print queue, Matthieu 2026-09-24) | Print queue — print_stations declare printers (heartbeat), print_jobs persist until claimed/printed; push via token API (print:write) or session; targeting a dead printer fails 409 |
+| API-040  | §7 follow-up (client ticket MV-167, 2026-10-18) | Audit reports carry `missing_ids` — the dashboard lists what wasn't found |
 
 Numbering follows the *Suggested order* in server.md (small wins first, then
 the sync work, then operational features); API-013..021 are appended by

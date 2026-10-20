@@ -244,6 +244,14 @@ team/location" from the full items table, which is inference, not fact.
 > ("3 found, 2 missing declared, 1 extra"), `location_id`/`location_name` —
 > filterable with `type=audit`, `location_id`, `since`. Each audit bumps the
 > team revision once (API-003). Client follow-up: the MV-050 "submit" button.
+>
+> **Implemented (2026-10, API-040)** — the report may also carry
+> `missing_ids: string[]` (client ticket MV-167): the expected-but-not-found
+> list, validated with the same team-membership snapshot semantics and stored
+> verbatim in `payload.missing_ids`. Additive — clients that declare only
+> `missing_count` keep working; the count is never recomputed from the list.
+> The web audit page (`GET /teams/{team}/audits`) resolves the list to item
+> names; legacy audits show the count-only note.
 
 **Why** — MV-050 produces a found/missing/extra report *locally*; the server
 never learns an audit happened. A stocktake that isn't recorded is an audit
@@ -339,6 +347,7 @@ answer in one integer.
 > | status:read / status:write | ✓ |
 > | location:read / location:write | ✓ |
 > | label:read / label:write | ✓ |
+> | print:write (API-039) | ✓ |
 > | account/settings abilities | ✗ |
 >
 > **Enrollment codes (2026-09, API-017)** — the password-free enrollment path:
@@ -664,6 +673,129 @@ the fleet.
 > printed location QR carries the RAW location id (the box-label
 > convention), and scanned codes resolve ITEMS-FIRST — a code on both an
 > item and a location resolves to the item; resolution order is client-side.
+>
+> **Location path display (API-036, WEB-ONLY — no API change)** — the
+> sub-location hierarchy from API-034 now renders as a full ancestor path
+> ("Garage > Black shelf") across the kanban web surfaces: board cards
+> (additive `location_path` in the boardRow shape, so delta rows carry it
+> too), location-board column titles, item-details modal + search/filter
+> results (resolved client-side from an injected `window.KANBAN_LOCATION_PATHS`
+> map), the batch/filter location selects, the Manage Locations list, the
+> activity feed's location rows, and the public share page. Engine:
+> `Location::pathsForTeam($teamId)` — ONE trashed-inclusive query per team,
+> chains walked in PHP with a visited-set + depth-cap guard (corrupt cycles
+> terminate with partial paths); per-request memoized, never serialized —
+> `api/location` / `api/item` payloads are unchanged (Android resolves the
+> tree client-side, MV-152). Delta follow-up: when the live poll reports
+> "Board updated — N changed, M removed", the delta rows also refresh the
+> injected `KANBAN_LOCATION_PATHS` map (fresh server-computed paths), and
+> an OPEN item-details modal keeps itself truthful — it silently re-fetches
+> when its item (or one of its contents) is among the changed rows, and
+> closes when its item was removed; an unaffected modal is left untouched
+> so mid-edit state (label/barcode input) is never wiped. Client side: web only.
+>
+> **Batch sync (API-037, implemented 2026-09-22)** — one request for a
+> phone's whole offline queue: `POST api/sync/batch` (auth:sanctum,
+> effective-team + `item:write` permission AND ability) takes
+> `operations[]` of 1..200, each `{op, base_revision, item_id?, changes?,
+> base?, label_id?}` with `op` ∈ create | rename | move | assign | pick |
+> unpick | delete | label_add | label_remove (the Android PendingOp verbs,
+> plan.md §4.14). Ops are applied ONE BY ONE in submission order, each in
+> its own transaction with per-op isolation (a failing op is an `error`
+> result; the batch continues), and every op persists a receipt row
+> (`sync_batch_operations`: exact payload, result, detail, applied_at;
+> `sync_batches` holds the `total/applied/conflicted/noop/failed` counters
+> + `finished_at`). Response: `{batch_id, results: [{index, op, item_id,
+> result, item?, conflicts?, error?}], revision}` + `X-Revision`;
+> `GET api/sync/batch/{batchId}` replays the persisted receipts for
+> reconciliation (team-scoped — a foreign batch is a 404; no existence
+> leak). Conflict oracle: each field op carries `base_revision` (the team
+> revision the phone last synced at, API-003/033) plus per-field `base`
+> values; when the item's `sync_revision` moved past it — EXCLUDING stamps
+> the batch itself produced (the phone's own earlier ops are not
+> divergence) — the server merges field-by-field: `server == base` → apply,
+> `server == mine` → noop, else → `conflict` `{base, yours, server}`,
+> atomic per op (any conflict applies nothing, zero bumps). Deletes ignore
+> a diverged base by design (they converge — documented LWW) and replicate
+> DELETE api/item semantics (`detached_ids` in the receipt); labels are
+> idempotent (duplicate attach / absent detach = `noop`, no bump — unlike
+> the single endpoint's 409/unconditional bump; child item → `has_parent`
+> error). Per-op error codes: `not_found`, `foreign_team`, `cycle`,
+> `bad_reference`, `has_parent`, `label_not_found`, `invalid_op`,
+> `exception`. Same-batch create→reference is unsupported v1 (the phone
+> cannot know server UUIDs before the create round-trips). Receipt tables
+> are NOT revision-observed (recording them bumps nothing) and the global
+> 60 req/min limiter is untouched — one batch is one request, up to 200
+> ops. Envelope violations (empty/>200/unknown op/missing base_revision or
+> item_id) are a 422 that persists nothing. Client side: to be ticketed (MV).
+>
+> **DYMO label printing (API-038, WEB-ONLY — no API change, 2026-09-23)** —
+> paper stickers for packed goods: item NAME + the item's uuid encoded BOTH
+> as Code128 and as QR (same convention as the API-028 identity QR — either
+> symbology scanned back resolves via `GET /kanban/item/{uuid}`). Printing
+> happens client-side through the DYMO Connect Web API: framework 2.x is
+> VENDORED (`public/js/vendor/dymo.connect.framework.js`, official
+> download.dymo.com build — no runtime CDN) and talks to the workstation's
+> local DYMO Connect service (localhost:41951). Shared service
+> `public/js/dymo.js` (`window.Dymo`): cached printer detection (one web
+> service round trip per page load; success tags `body.dymo-ready` and CSS
+> reveals every `.dymo-print` hook — buttons stay invisible when no
+> LabelWriter is attached), localStorage prefs for printer + label template
+> (label stock is a property of the PHYSICAL printer, not the team), three
+> built-in DieCutLabel templates (30334 default with name + Code128 + QR,
+> 30252 slim with all three, 30336 small with QR only — a 36-char Code128
+> cannot share 2.25" with a legible QR), and a serialized print queue.
+> Hooks: kanban card print icon (blade + `buildCardHtml` parity), details
+> modal header button, per-child print icons in the Contents list, and a
+> new session page `GET /label-print` (`LabelPrintController`, current-team
+> gated like the kanban pages): scan a box uuid → contents grid → touch a
+> row to print its sticker; single (childless) items offer their own label,
+> so any printed sticker re-scans into a printable/station view. Item data
+> stays gated by the existing `GET /kanban/item/{itemId}` (item:read).
+>
+> **Server-side DYMO print queue (API-039, 2026-09-24)** — API-038's
+> client-only path is replaced by a server-mediated queue: ANY client (web
+> kanban, /label-print station, or the app) POSTs a job; browsers/workstations
+> with a real DYMO attached declare themselves as *print stations* and drain
+> the queue by polling. Two tables: `print_stations` (team + browser-local
+> `client_id` uuid upserted on [team_id, client_id]; `printer_name`, optional
+> `label`/`template`, `last_seen_at` heartbeat) and `print_jobs` (team, user,
+> item, `template`, nullable `target_printer` — NULL = first claimer wins —
+> `status` pending/claimed/printed/failed, `claimed_by`/`claimed_at`,
+> `completed_at`, `error`, `attempts`). Both are NOT revision-observed
+> (printing plumbing, sync_batches precedent — queue writes bump nothing) and
+> jobs are never deleted (audit trail; a deleted item cascades its pending
+> jobs). Semantics (all in `App\Support\PrintQueue`): liveness = heartbeat
+> within **90 s** (the ~2 s poll doubles as heartbeat; a hidden tab pauses its
+> poll and correctly goes dead); a **targeted** push (`target_printer` set)
+> with no live station serving that printer name is rejected **409**
+> `{"error": "Printer \"X\" is not available"}` — untargeted pushes always
+> enqueue; claiming is FIFO by created_at with jobs targeted at the claiming
+> station's printer first, made atomic by a conditional single-row UPDATE
+> (affected-rows === 1 ⇒ owner) so two stations can never take the same job;
+> a claim older than **300 s** is reclaimed (owner died mid-print); a failed
+> print goes back to pending until **3 attempts**, then terminal `failed` with
+> the error kept; completion from a non-owner station is a no-op
+> (`success: false`), not an error. Routes, two flavors of the same contract:
+> token API — `POST api/print/jobs` (team `item:write` permission AND the new
+> **`print:write`** token ability; template whitelist 422; cross-team item
+> 404; dead target 409) and `GET api/print/stations` (`item:read` +
+> `print:write`, live stations only, for the app's printer picker); session
+> web — `POST /print/jobs` (item:write), `GET /print/claim?client_id&
+> printer_name&…` (item:read; doubles as heartbeat; response carries the
+> print-ready payload `{job: {id, item_id, item_name, template,
+> target_printer}}` or `{job: null}` so the station never re-fetches the
+> item), `POST /print/jobs/{id}/complete` (item:read), `POST /print/station`
+> (item:read). The item NAME is snapshotted at claim time — a rename between
+> enqueue and print prints the old name (accepted). Frontend: `dymo.js` gains
+> a persistent station identity (`localStorage dymo.station`), `declareStation()`
+> and a `startQueueWorker()` 2 s claim-poll loop (paused when the tab is
+> hidden or a print is in flight); kanban print buttons and the /label-print
+> rows now queue-push instead of printing locally — a kanban tab on a
+> printer-equipped machine drains the queue too; the API-038 `.dymo-print`
+> CSS gate is gone (buttons always visible — queuing needs no local DYMO).
+> Note: `print:write` gates only the token flavor; the session web flavor
+> relies on team permissions (session requests carry no ability list).
 
 ---
 

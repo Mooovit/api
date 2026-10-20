@@ -10,13 +10,16 @@ class DeviceTokenController extends Controller
     /**
      * The ability set minted for device tokens (API-012): everything the
      * warehouse flows need — items, statuses, locations, labels, read+write —
-     * nothing account/settings-level. Pinned by DeviceTokenTest.
+     * nothing account/settings-level. API-039 adds `print:write` so a PDA can
+     * push label jobs to the print queue (and list the live stations).
+     * Pinned by DeviceTokenTest.
      */
     public const DEVICE_ABILITIES = [
         'item:read', 'item:write',
         'status:read', 'status:write',
         'location:read', 'location:write',
         'label:read', 'label:write',
+        'print:write',
     ];
 
     /**

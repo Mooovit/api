@@ -145,6 +145,10 @@
                         <i class="fas fa-history mr-3"></i>
                         Live Activity
                     </a>
+                    <a href="/label-print" class="sidebar-item w-full flex items-center px-3 py-2 rounded-lg text-sm font-medium text-gray-700 hover:text-indigo-600">
+                        <i class="fas fa-print mr-3"></i>
+                        Label Print Station
+                    </a>
                 </div>
             </nav>
         </div>
@@ -246,11 +250,15 @@
                                             @endif
                                             @if($item['location_name'])
                                             <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                                <i class="fas fa-map-marker-alt mr-1"></i>{{ $item['location_name'] }}
+                                                <i class="fas fa-map-marker-alt mr-1"></i>{{ $item['location_path'] ?? $item['location_name'] }}
                                             </span>
                                             @endif
                                         </div>
                                         <div class="text-xs text-gray-400 flex items-center gap-2">
+                                            {{-- API-039: always visible — queues a label job, no local DYMO needed --}}
+                                            <button onclick="event.stopPropagation(); printItemLabel('{{ $item['id'] }}', this)" title="Queue DYMO label" class="hover:text-indigo-600">
+                                                <i class="fas fa-print"></i>
+                                            </button>
                                             <button onclick="event.stopPropagation(); showCardQr('{{ $item['id'] }}')" title="Show public share QR" class="hover:text-indigo-600">
                                                 <i class="fas fa-qrcode"></i>
                                             </button>
@@ -301,7 +309,7 @@
                                 <select id="batchLocation" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
                                     <option value="">Keep current location</option>
                                     @foreach($locations as $location)
-                                    <option value="{{ $location->id }}">{{ $location->name }}</option>
+                                    <option value="{{ $location->id }}">{{ $locationPaths[$location->id] ?? $location->name }}</option>
                                     @endforeach
                                 </select>
                             </div>
@@ -421,8 +429,12 @@
                             <div class="space-y-2">
                                 @foreach($locations as $location)
                                 <div class="flex items-center justify-between p-3 bg-white border rounded-lg" data-id="{{ $location->id }}" data-type="location">
-                                    <div class="flex-1">
+                                    <div class="flex-1 min-w-0">
                                         <input type="text" value="{{ $location->name }}" class="edit-input bg-transparent border-none p-0 font-medium text-gray-800 w-full" readonly>
+                                        {{-- API-036: show where the sub-location hangs --}}
+                                        @if(($locationPaths[$location->id] ?? $location->name) !== $location->name)
+                                        <div class="text-xs text-gray-400 truncate">{{ $locationPaths[$location->id] }}</div>
+                                        @endif
                                     </div>
                                     <div class="flex gap-2">
                                         <button onclick="editItem('{{ $location->id }}', 'location')" class="text-blue-600 hover:text-blue-800">
@@ -508,7 +520,7 @@
                                 @endforeach
                             @else
                                 @foreach($locations as $location)
-                                <option value="{{ $location->id }}">{{ $location->name }}</option>
+                                <option value="{{ $location->id }}">{{ $locationPaths[$location->id] ?? $location->name }}</option>
                                 @endforeach
                             @endif
                         </select>
@@ -692,7 +704,18 @@
          license — vanilla JS, renders SVG/table, no CDN (works on the LAN). -->
     <script src="{{ asset('js/vendor/qrcode.min.js') }}"></script>
 
+    {{-- API-038: DYMO Connect framework 2.x (vendored from the official
+         download.dymo.com build) + the shared label service. Detection runs
+         at page init; print buttons appear only via body.dymo-ready. --}}
+    {{-- v2 = WS_PROTOCOL forced to http (the local DYMO service has no TLS) --}}
+    <script src="{{ asset('js/vendor/dymo.connect.framework.js') }}?v=2"></script>
+    <script src="{{ asset('js/dymo.js') }}?v={{ time() }}"></script>
+
     <!-- Custom Kanban JS -->
+    {{-- API-036: team location id => "Garage > Black shelf" map — the JS
+         details modal / search / filter resolve paths from it client-side.
+         Board cards don't need it (their rows carry `location_path`). --}}
+    <script>window.KANBAN_LOCATION_PATHS = @json($locationPaths ?? []);</script>
     <script src="{{ asset('js/kanban.js') }}?v={{ time() }}"></script>
     
 <script>

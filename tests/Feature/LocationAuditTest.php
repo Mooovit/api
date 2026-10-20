@@ -405,6 +405,74 @@ class LocationAuditTest extends TestCase
         $this->assertSame($revisionBefore + 1, $team->fresh()->revision);
     }
 
+    /**
+     * API-040 (client MV-167): the report may carry `missing_ids` — the
+     * expected-but-not-found list — additive to the declared count.
+     */
+    public function test_submit_accepts_and_persists_missing_ids(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $location = Location::factory()->onTeam($team)->create();
+        $found = Item::factory()->onTeam($team)->count(2)->create()->pluck('id')->all();
+        $missing = Item::factory()->onTeam($team)->count(2)->create()->pluck('id')->all();
+        $trashedMissing = Item::factory()->onTeam($team)->create();
+        $trashedMissing->delete();
+
+        $response = $this->actingAsApi($user, ['item:write'])
+            ->postJson("/api/location/{$location->id}/audits", [
+                'found_ids' => $found,
+                'missing_ids' => [$missing[0], $missing[1], $trashedMissing->id],
+                'missing_count' => 3,
+            ])
+            ->assertStatus(201);
+
+        /* Stored verbatim, order kept; trashed team items validate (same
+           snapshot semantics as found/extra) */
+        $this->assertSame(
+            [$missing[0], $missing[1], $trashedMissing->id],
+            $response->json('payload.missing_ids')
+        );
+
+        /* The declared count is stored as declared — never recomputed */
+        $this->assertSame(3, $response->json('missing_count'));
+        $this->assertSame(2, $response->json('found_count'));
+    }
+
+    public function test_submit_without_missing_ids_keeps_the_legacy_payload(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        $location = Location::factory()->onTeam($team)->create();
+        $found = Item::factory()->onTeam($team)->create();
+
+        $response = $this->actingAsApi($user, ['item:write'])
+            ->postJson("/api/location/{$location->id}/audits", [
+                'found_ids' => [$found->id],
+                'missing_count' => 1,
+            ])
+            ->assertStatus(201);
+
+        $this->assertSame([], $response->json('payload.missing_ids'));
+        $this->assertSame(1, $response->json('missing_count'));
+    }
+
+    public function test_submit_rejects_missing_ids_from_another_team(): void
+    {
+        [$user, $team] = $this->newUserWithTeam();
+        [$stranger, $otherTeam] = $this->newUserWithTeam();
+        $location = Location::factory()->onTeam($team)->create();
+        $foreign = Item::factory()->onTeam($otherTeam)->create();
+
+        $this->actingAsApi($user, ['item:write'])
+            ->postJson("/api/location/{$location->id}/audits", [
+                'found_ids' => [],
+                'missing_ids' => [$foreign->id],
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('found_ids');
+
+        $this->assertDatabaseCount('audits', 0);
+    }
+
     public function test_input_validation(): void
     {
         [$user, $team] = $this->newUserWithTeam();

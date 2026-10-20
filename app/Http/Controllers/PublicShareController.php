@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\ItemShareLink;
+use App\Models\Location;
 
 /**
  * API-024: the unauthenticated, read-only public page behind a share link.
@@ -15,6 +16,10 @@ class PublicShareController extends Controller
 {
     /**
      * GET /share/{token} — public read-only view of one box's contents.
+     *
+     * API-036: locations render as the full ancestor path
+     * ("Garage > Black shelf") — the map is resolved server-side and only
+     * the composed strings reach the view (no ids leak to the markup).
      *
      * @param  string  $token
      * @return \Illuminate\View\View
@@ -39,9 +44,12 @@ class PublicShareController extends Controller
             },
         ]);
 
+        $locationPaths = Location::pathsForTeam($item->team_id);
+
         return view('public.box', [
             'box' => $item,
             'contents' => $item->childrens,
+            'locationPaths' => $locationPaths,
         ]);
     }
 }

@@ -171,6 +171,56 @@
                             No items yet.
                         </p>
                     </div>
+
+                    <!-- Latest audits -->
+                    <div class="bg-white overflow-hidden shadow-xl sm:rounded-lg p-4 sm:p-6">
+                        <div class="flex items-center justify-between">
+                            <h3 class="font-semibold text-gray-800">Latest audits</h3>
+                            <inertia-link class="text-sm text-indigo-600 hover:underline"
+                                          :href="route('audits.index', { team: team.id })">
+                                view all
+                            </inertia-link>
+                        </div>
+                        <table class="mt-3 w-full text-sm" v-if="audits.length">
+                            <thead>
+                                <tr class="text-left text-gray-500">
+                                    <th class="py-2 pr-4 font-medium">Location</th>
+                                    <th class="py-2 pr-4 font-medium">By</th>
+                                    <th class="py-2 pr-4 font-medium">Result</th>
+                                    <th class="py-2 font-medium">When</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="audit in audits" :key="audit.id" class="border-t border-gray-100">
+                                    <td class="py-2 pr-4 font-medium text-gray-800">{{ audit.location || '—' }}</td>
+                                    <td class="py-2 pr-4 text-gray-600">{{ audit.user || '—' }}</td>
+                                    <td class="py-2 pr-4">
+                                        <span v-if="isClean(audit)"
+                                              class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700">
+                                            clean · {{ audit.found_count }} found
+                                        </span>
+                                        <span v-else class="inline-flex flex-wrap items-center gap-1 text-xs">
+                                            <span class="inline-flex items-center px-2 py-0.5 rounded-full font-medium bg-green-50 text-green-700">
+                                                {{ audit.found_count }} found
+                                            </span>
+                                            <span v-if="audit.missing_count"
+                                                  class="inline-flex items-center px-2 py-0.5 rounded-full font-medium bg-red-50 text-red-700">
+                                                {{ audit.missing_count }} missing
+                                            </span>
+                                            <span v-if="audit.extra_count"
+                                                  class="inline-flex items-center px-2 py-0.5 rounded-full font-medium bg-amber-50 text-amber-700">
+                                                {{ audit.extra_count }} extra
+                                            </span>
+                                        </span>
+                                    </td>
+                                    <td class="py-2 text-gray-600">{{ formatDateTime(audit.created_at) }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <p v-else class="mt-3 text-sm text-gray-500">
+                            No audits yet.
+                        </p>
+                    </div>
                 </template>
             </div>
         </div>
@@ -191,6 +241,7 @@
             'counts',
             'status_breakdown',
             'items',
+            'audits',
             'last_activity_at',
             'last_device_seen_at',
             'last_backup',
@@ -202,6 +253,10 @@
         methods: {
             formatDateTime(value) {
                 return value ? new Date(value).toLocaleString() : '—';
+            },
+
+            isClean(audit) {
+                return audit.missing_count === 0 && audit.extra_count === 0;
             },
 
             humanSize(bytes) {
